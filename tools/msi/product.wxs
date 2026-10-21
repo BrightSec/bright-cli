@@ -24,7 +24,7 @@
             <!-- RegistryValue needed because every Component must have a KeyPath.
                                             Because of ICE43, the Root must be HKCU. -->
             <RegistryValue Root="HKCU" Key="$(var.RegistryKeyPath)\Components" Type="integer" Value="1" KeyPath="yes" />
-            <util:InternetShortcut Id="OnlineWebsiteShortcut" Name="$(var.ProductName) repository" Target="https://github.com/NeuraLegion/bright-cli" Type="url" />
+            <util:InternetShortcut Id="OnlineWebsiteShortcut" Name="$(var.ProductName) repository" Target="https://github.com/BrightSec/bright-cli" Type="url" />
             <util:InternetShortcut Id="OnlineDocumentationShortcut" Name="$(var.ProductName) documentation" Target="https://docs.brightsec.com/docs/about-bright-cli" Type="url" />
             <Shortcut Id="UninstallProduct" Name="Uninstall $(var.ProductName)" Target="[System64Folder]msiexec.exe" Arguments="/x [ProductCode]" />
             <Shortcut Id="ExeShortcut" Name="$(var.ProductName)" Icon="BrightIcon" Target="[INSTALLDIR]bright-cli.exe" WorkingDirectory="INSTALLDIR" IconIndex="0" />

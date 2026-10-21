@@ -4,7 +4,7 @@
   "private": false,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NeuraLegion/bright-cli.git"
+    "url": "git+https://github.com/BrightSec/bright-cli.git"
   },
   "publishConfig": {
     "access": "public"
@@ -14,7 +14,7 @@
     "bright-cli": "./dist/index.js"
   },
   "bugs": {
-    "url": "https://github.com/NeuraLegion/bright-cli/issues"
+    "url": "https://github.com/BrightSec/bright-cli/issues"
   },
   "commitlint": {
     "extends": [
@@ -106,7 +106,7 @@
   "files": [
     "dist"
   ],
-  "homepage": "https://github.com/NeuraLegion/bright-cli#readme",
+  "homepage": "https://github.com/BrightSec/bright-cli#readme",
   "keywords": [
     "nexploit",
     "cli",

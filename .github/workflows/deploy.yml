@@ -298,12 +298,8 @@ jobs:
         with:
           name: build
 
-        # The scope does not align with the package name
-        # FIXME: once GitHub organization name has been changed, we should prevent this behavior
       - name: Prepare GPR package
-        run: |
-          npm pkg set name='@neuralegion/bright-cli' \
-            && npm pkg set brightCli.distribution=gpr
+        run: npm pkg set brightCli.distribution=gpr
 
       - name: Setup node
         uses: ./.github/workflows/composite/npm

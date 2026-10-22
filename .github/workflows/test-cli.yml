@@ -116,7 +116,7 @@ jobs:
       - name: Download Executable
         shell: bash
         run: |
-          curl -fsSL https://github.com/NeuraLegion/bright-cli/releases/download/${{ needs.resolve-version.outputs.version }}/${{ matrix.executable }} > ./${{ matrix.executable }}
+          curl -fsSL https://github.com/BrightSec/bright-cli/releases/download/${{ needs.resolve-version.outputs.version }}/${{ matrix.executable }} > ./${{ matrix.executable }}
           chmod +x ./${{ matrix.executable }}
 
       - name: Download Target
@@ -156,7 +156,7 @@ jobs:
       - name: Download and Install Bright CLI using MSI
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri 'https://github.com/NeuraLegion/bright-cli/releases/download/${{ needs.resolve-version.outputs.version }}/bright-cli.msi' -OutFile bright-cli.msi
+          Invoke-WebRequest -Uri 'https://github.com/BrightSec/bright-cli/releases/download/${{ needs.resolve-version.outputs.version }}/bright-cli.msi' -OutFile bright-cli.msi
           $lastExitCode = (Start-Process msiexec.exe `
             -ArgumentList "/i bright-cli.msi /qn /norestart /l*v `"$($pwd)\install.log`"" `
             -PassThru `

@@ -4,7 +4,7 @@
   "private": false,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NeuraLegion/bright-cli.git"
+    "url": "git+https://github.com/BrightSec/bright-cli.git"
   },
   "publishConfig": {
     "access": "public"
@@ -14,7 +14,7 @@
     "bright-cli": "./dist/index.js"
   },
   "bugs": {
-    "url": "https://github.com/NeuraLegion/bright-cli/issues"
+    "url": "https://github.com/BrightSec/bright-cli/issues"
   },
   "commitlint": {
     "extends": [
@@ -26,9 +26,9 @@
   },
   "dependencies": {
     "@brightsec/node-libcurl": "5.1.6",
-    "@modelcontextprotocol/sdk": "^1.31.0",
-    "@neuralegion/os-service": "^2.0.7",
-    "@neuralegion/raw-socket": "^2.0.2",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "@brightsec/os-service": "^2.0.7",
+    "@brightsec/raw-socket": "^2.0.2",
     "@sentry/node": "^7.120.0",
     "ajv": "^6.12.6",
     "arch": "^2.2.0",
@@ -106,7 +106,7 @@
   "files": [
     "dist"
   ],
-  "homepage": "https://github.com/NeuraLegion/bright-cli#readme",
+  "homepage": "https://github.com/BrightSec/bright-cli#readme",
   "keywords": [
     "nexploit",
     "cli",
@@ -134,10 +134,10 @@
       "./node_modules/@brightsec/node-libcurl/lib/binding/node_libcurl.node",
       "./node_modules/axios/**",
       "./node_modules/win-ca/lib/crypt32-*.node",
-      "./node_modules/@neuralegion/os-service/prebuilds/win32-x64/@neuralegion+os-service.abi137.node",
-      "./node_modules/@neuralegion/raw-socket/prebuilds/win32-x64/@neuralegion+raw-socket.abi137.node",
-      "./node_modules/@neuralegion/raw-socket/prebuilds/linux-x64/@neuralegion+raw-socket.abi137.glibc.node",
-      "./node_modules/@neuralegion/raw-socket/prebuilds/darwin-x64+arm64/@neuralegion+raw-socket.abi137.node",
+      "./node_modules/@brightsec/os-service/prebuilds/win32-x64/@brightsec+os-service.abi127.node",
+      "./node_modules/@brightsec/raw-socket/prebuilds/win32-x64/@brightsec+raw-socket.abi127.node",
+      "./node_modules/@brightsec/raw-socket/prebuilds/linux-x64/@brightsec+raw-socket.abi127.node",
+      "./node_modules/@brightsec/raw-socket/prebuilds/darwin-x64+arm64/@brightsec+raw-socket.abi127.node",
       "./node_modules/rotating-file-stream/**"
     ],
     "targets": [

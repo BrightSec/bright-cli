@@ -52,7 +52,7 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
           else
-            VERSION=$(curl -s https://api.github.com/repos/NeuraLegion/bright-cli/releases/latest | jq -r '.tag_name')
+            VERSION=$(curl -s https://api.github.com/repos/BrightSec/bright-cli/releases/latest | jq -r '.tag_name')
             echo "version=$VERSION" >> $GITHUB_OUTPUT
           fi
 
@@ -116,7 +116,7 @@ jobs:
       - name: Download Executable
         shell: bash
         run: |
-          curl -fsSL https://github.com/NeuraLegion/bright-cli/releases/download/${{ needs.resolve-version.outputs.version }}/${{ matrix.executable }} > ./${{ matrix.executable }}
+          curl -fsSL https://github.com/BrightSec/bright-cli/releases/download/${{ needs.resolve-version.outputs.version }}/${{ matrix.executable }} > ./${{ matrix.executable }}
           chmod +x ./${{ matrix.executable }}
 
       - name: Download Target
@@ -156,7 +156,7 @@ jobs:
       - name: Download and Install Bright CLI using MSI
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri 'https://github.com/NeuraLegion/bright-cli/releases/download/${{ needs.resolve-version.outputs.version }}/bright-cli.msi' -OutFile bright-cli.msi
+          Invoke-WebRequest -Uri 'https://github.com/BrightSec/bright-cli/releases/download/${{ needs.resolve-version.outputs.version }}/bright-cli.msi' -OutFile bright-cli.msi
           $lastExitCode = (Start-Process msiexec.exe `
             -ArgumentList "/i bright-cli.msi /qn /norestart /l*v `"$($pwd)\install.log`"" `
             -PassThru `

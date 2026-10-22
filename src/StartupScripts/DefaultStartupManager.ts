@@ -8,7 +8,7 @@ import {
   stop,
   enable,
   disable
-} from '@neuralegion/os-service';
+} from '@brightsec/os-service';
 import { promisify } from 'node:util';
 
 export class DefaultStartupManager implements StartupManager {

@@ -302,14 +302,14 @@ jobs:
         # FIXME: once GitHub organization name has been changed, we should prevent this behavior
       - name: Prepare GPR package
         run: |
-          npm pkg set name='@neuralegion/bright-cli' \
+          npm pkg set name='@brightsec/bright-cli' \
             && npm pkg set brightCli.distribution=gpr
 
       - name: Setup node
         uses: ./.github/workflows/composite/npm
         with:
           registry: 'https://npm.pkg.github.com'
-          scope: '@NeuraLegion'
+          scope: '@BrightSec'
 
       - run: npm publish --tag ${{ needs.resolve-tag.outputs.tag }}
         env:

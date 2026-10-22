@@ -15,7 +15,7 @@ Prerequisites:
 To install the Bright CLI Helm chart, you need to execute the following command:
 
 ```bash
-helm install bright-cli oci://ghcr.io/neuralegion/bright-cli \
+helm install bright-cli oci://ghcr.io/brightsec/bright-cli \
 --set api.hostname="app.brightsec.com" \
 --set api.token="your-brightsec-api-token" \
 --set repeater.id="your-repeater-id"
@@ -41,7 +41,7 @@ kubectl create secret generic my-bright-secret \
 2. Then install the chart referencing the existing secret:
 
 ```bash
-helm install bright-cli oci://ghcr.io/neuralegion/bright-cli \
+helm install bright-cli oci://ghcr.io/brightsec/bright-cli \
 --set api.hostname="app.brightsec.com" \
 --set api.existingSecret.name="my-bright-secret" \
 --set repeater.id="your-repeater-id"
@@ -54,7 +54,7 @@ helm install bright-cli oci://ghcr.io/neuralegion/bright-cli \
 If you need to upgrade the chart, you can use the following command:
 
 ```bash
-helm upgrade bright-cli oci://ghcr.io/neuralegion/bright-cli
+helm upgrade bright-cli oci://ghcr.io/brightsec/bright-cli
 ```
 
 ## Uninstalling the Chart

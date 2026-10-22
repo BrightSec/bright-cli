@@ -305,7 +305,7 @@ jobs:
         uses: ./.github/workflows/composite/npm
         with:
           registry: 'https://npm.pkg.github.com'
-          scope: '@NeuraLegion'
+          scope: '@brightsec'
 
       - run: npm publish --tag ${{ needs.resolve-tag.outputs.tag }}
         env:

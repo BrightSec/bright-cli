@@ -52,7 +52,7 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             echo "version=${{ inputs.version }}" >> $GITHUB_OUTPUT
           else
-            VERSION=$(curl -s https://api.github.com/repos/NeuraLegion/bright-cli/releases/latest | jq -r '.tag_name')
+            VERSION=$(curl -s https://api.github.com/repos/BrightSec/bright-cli/releases/latest | jq -r '.tag_name')
             echo "version=$VERSION" >> $GITHUB_OUTPUT
           fi
 

@@ -1,3 +1,4 @@
+import ms from 'ms';
 import { ok } from 'node:assert';
 import { ChildProcess, spawn } from 'node:child_process';
 import { normalize } from 'node:path';
@@ -245,6 +246,21 @@ export class Helpers {
 
       return { ...acc, [key]: header };
     }, {});
+  }
+
+  /**
+   * Converts a duration to milliseconds. Strings such as "10s" or "1m" are
+   * parsed with `ms`; a bare number is read in `numericUnit`.
+   */
+  public static parseDuration(
+    value: string | number,
+    numericUnit: 'ms' | 's'
+  ): number {
+    if (isNaN(+value)) {
+      return ms(value as string);
+    }
+
+    return numericUnit === 's' ? +value * 1000 : +value;
   }
 
   public static portFromURL(url: URL): string {

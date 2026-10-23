@@ -248,10 +248,6 @@ export class Helpers {
     }, {});
   }
 
-  /**
-   * Converts a duration to milliseconds. Strings such as "10s" or "1m" are
-   * parsed with `ms`; a bare number is read in `numericUnit`.
-   */
   public static parseDuration(
     value: string | number,
     numericUnit: 'ms' | 's'

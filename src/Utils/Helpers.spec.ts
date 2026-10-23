@@ -293,6 +293,29 @@ describe('Helpers', () => {
     });
   });
 
+  describe('parseDuration', () => {
+    it.each([
+      { input: 30, unit: 's', expected: 30_000 },
+      { input: '30', unit: 's', expected: 30_000 },
+      { input: '0.5', unit: 's', expected: 500 },
+      { input: 30_000, unit: 'ms', expected: 30_000 },
+      { input: '45000', unit: 'ms', expected: 45_000 },
+      { input: '10s', unit: 's', expected: 10_000 },
+      { input: '10s', unit: 'ms', expected: 10_000 },
+      { input: '1m', unit: 'ms', expected: 60_000 },
+      { input: '1h', unit: 's', expected: 3_600_000 }
+    ] as const)(
+      'should convert $input with numeric unit "$unit" to $expected milliseconds',
+      ({ input, unit, expected }) => {
+        // act
+        const actual = Helpers.parseDuration(input, unit);
+
+        // assert
+        expect(actual).toBe(expected);
+      }
+    );
+  });
+
   describe('portFromURL', () => {
     it('should return port 80 by default for http', () => {
       // arrange

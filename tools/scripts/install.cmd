@@ -28,7 +28,7 @@ if %errorLevel% == 0 (
 set "VENDOR=bright"
 set "PRODUCT_NAME=%VENDOR%-cli"
 set "INSTALL_DIR=%ProgramFiles%\%PRODUCT_NAME%"
-set "DOWNLOAD_URL=https://github.com/NeuraLegion/%PRODUCT_NAME%/releases/latest/download/%PRODUCT_NAME%-win-x64.exe"
+set "DOWNLOAD_URL=https://github.com/BrightSec/%PRODUCT_NAME%/releases/latest/download/%PRODUCT_NAME%-win-x64.exe"
 
 :: Create an installation folder if not exist
 if not exist "%INSTALL_DIR%" (

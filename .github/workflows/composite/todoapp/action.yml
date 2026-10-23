@@ -27,7 +27,7 @@ runs:
           CMD=./$EXECUTABLE
         fi
         
-        curl -fsSL https://github.com/NeuraLegion/go-todoapp-demo/releases/latest/download/$EXECUTABLE > ./$EXECUTABLE
+        curl -fsSL https://github.com/BrightSec/go-todoapp-demo/releases/latest/download/$EXECUTABLE > ./$EXECUTABLE
         chmod +x ./$EXECUTABLE
 
         echo "cmd=$CMD" >> "$GITHUB_OUTPUT"

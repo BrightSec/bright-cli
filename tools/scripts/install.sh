@@ -10,7 +10,7 @@
 
   # Download an executable
   OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-  DOWNLOAD_URL=https://github.com/NeuraLegion/$PRODUCT_NAME/releases/latest/download/$PRODUCT_NAME
+  DOWNLOAD_URL=https://github.com/BrightSec/$PRODUCT_NAME/releases/latest/download/$PRODUCT_NAME
 
   if [[ "$OS" == "linux-gnu"* ]]; then
     DOWNLOAD_URL+="-linux-x64"

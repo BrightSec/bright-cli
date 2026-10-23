@@ -253,7 +253,7 @@ export class Helpers {
     numericUnit: 'ms' | 's'
   ): number {
     if (isNaN(+value)) {
-      return ms(value as string);
+      return ms(String(value));
     }
 
     return numericUnit === 's' ? +value * 1000 : +value;

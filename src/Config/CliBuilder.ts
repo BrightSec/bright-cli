@@ -231,7 +231,8 @@ export class CliBuilder {
       release: process.env.VERSION,
       ignoreErrors: [
         /The Repeater ID [\w]+ specified is currently being used by another Repeater\./,
-        /The Repeater ID [\w]+ is inactive\./
+        /The Repeater ID [\w]+ is inactive\./,
+        /Failed to log in with provided credentials\./
       ],
       beforeSend(event) {
         if (event.contexts.args) {

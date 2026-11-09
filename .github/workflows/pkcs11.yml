@@ -96,8 +96,8 @@ jobs:
           . tests/pkcs11/.work/pkcs11.env
           npm run test:pkcs11
 
-      # libp11 has no equivalent of pkcs11-provider's no-deinit quirk; this shows
-      # whether fresh connections in one process survive the provider lifecycle.
+      # Shows the provider lifecycle problem with a new easy handle per request,
+      # next to pooled connections and long-lived handles.
       - name: Fresh connections in one process
         continue-on-error: true
         run: |
@@ -105,7 +105,7 @@ jobs:
           npx ts-node tests/pkcs11/target.ts &
           sleep 5
           KEY="pkcs11:token=$PKCS11_TEST_TOKEN;object=$PKCS11_TEST_OBJECT;type=private?pin-value=$PKCS11_TEST_PIN"
-          for job in '"requests":50' '"requests":100,"pool":2'; do
+          for job in '"requests":50' '"requests":100,"pool":2' '"requests":50,"concurrency":2,"persistentHandles":true'; do
             node -r ts-node/register/transpile-only tests/pkcs11/client.ts \
               "{\"url\":\"https://localhost:8443/\",$job,\"curlOptions\":{\"SSLENGINE\":\"pkcs11prov\",\"SSLKEYTYPE\":\"PROV\",\"SSLKEY\":\"$KEY\",\"SSLCERT\":\"$PKCS11_TEST_DIR/client.pem\"}}" \
               | grep PKCS11_CLIENT_RESULT \

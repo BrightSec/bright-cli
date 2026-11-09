@@ -140,6 +140,24 @@ describe('PKCS#11 client certificates (SoftHSM2)', () => {
     expect(target.stats().handshakes).toBe(0);
   });
 
+  it('keeps completing fresh handshakes in one process when the easy handles are long-lived', async () => {
+    const result = await run(
+      {
+        curlOptions: {
+          ...providerKey(env.pin),
+          SSLCERT: join(env.pkiDir, 'client.pem')
+        },
+        requests: 30,
+        concurrency: 2,
+        persistentHandles: true
+      },
+      target
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(target.stats()).toEqual({ handshakes: 30, requests: 30 });
+  });
+
   it('signs once per pooled connection when connections are reused', async () => {
     const pool = 2;
 

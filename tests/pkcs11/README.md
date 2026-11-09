@@ -71,7 +71,7 @@ Inspect the token with `pkcs11-tool --module "$PKCS11_TEST_MODULE" --login --pin
 
 ## Known limitations
 
-- **One PKCS#11 module per process.** curl loads and unloads the provider for each easy handle, and the unload finalizes the process-wide module. A later fresh connection in the same process then fails with `PKCS11 Module has not been initialized yet`. Connection reuse avoids it. The tests run each case in its own process for this reason.
+- **One PKCS#11 module per process.** curl loads and unloads the provider together with each easy handle, and the unload tears down state of the process-wide module (`C_Finalize`, `C_CloseAllSessions`). A fresh connection on a _new_ handle in the same process then fails (`PKCS11 Module has not been initialized yet`, or `provider signature failure` with libp11). Keeping the easy handles long-lived avoids it with both providers, without quirks or patches; connection reuse reduces how often it matters. The tests run each case in its own process and cover the long-lived-handle mode explicitly.
 - **The PIN goes in the key URI for providers** (`?pin-value=`). Providers ignore `KEYPASSWD`; the engine honours it.
 - **libcurl reports every key-loading failure the same way.** A wrong PIN, a missing token and a bad module path all surface as `CURLE_SSL_CERTPROBLEM` (58).
 - **SoftHSM2 can't simulate readers or card removal**, and its signing is far faster than a real card's. Use a real card to check error handling and throughput.

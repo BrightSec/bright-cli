@@ -34,10 +34,13 @@ jobs:
         uses: ./.github/workflows/composite/npm
 
       # A unique prerelease version keeps these artifacts apart from real releases.
+      # build-msi.ps1 turns X.Y.Z-<tag>.N into the MSI version X.Y.Z.N, so the
+      # suffix must keep exactly one numeric identifier.
       - name: Set build version
         id: version
         run: |
-          VERSION="$(node -p "require('./package.json').version").pkcs11.${{ github.run_number }}.${{ github.run_attempt }}"
+          BASE="$(node -p "require('./package.json').version.split('-')[0]")"
+          VERSION="$BASE-pkcs11.${{ github.run_number }}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -74,7 +77,8 @@ jobs:
         include:
           - os: windows-2022
             target: win
-          - os: macos-14
+          # deploy.yml still uses macos-14, which GitHub no longer provides.
+          - os: macos-15
             target: macos
           - os: ubuntu-22.04
             target: linux

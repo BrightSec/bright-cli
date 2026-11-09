@@ -161,6 +161,7 @@
     "test:unit": "cross-env NODE_ENV=test jest src",
     "test:e2e": "cross-env NODE_ENV=test jest tests/e2e",
     "test:smoke": "cross-env NODE_ENV=test jest tests/smoke",
+    "test:pkcs11": "cross-env NODE_ENV=test jest tests/pkcs11 --runInBand --testTimeout=60000",
     "build": "webpack --config webpack.config.js --mode=production",
     "build:pkg": "pkg .",
     "prepare": "is-ci || husky install",

@@ -1,0 +1,39 @@
+name: PKCS#11 TLS stack
+
+on:
+  pull_request:
+    paths:
+      - 'tests/pkcs11/**'
+      - 'package-lock.json'
+      - '.github/workflows/pkcs11.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: '${{ github.workflow }}-${{ github.ref }}'
+  cancel-in-progress: true
+
+jobs:
+  softhsm:
+    runs-on: ubuntu-latest
+    # Keep the image and package list in sync with tests/pkcs11/Dockerfile.
+    container: node:24-trixie
+    steps:
+      - name: Install PKCS#11 tooling
+        run: |
+          apt-get update -yq \
+            && apt-get install -yq --no-install-recommends softhsm2 opensc pkcs11-provider libengine-pkcs11-openssl openssl \
+            && rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deps
+        run: npm ci -q
+
+      - name: Provision SoftHSM2 token
+        run: tests/pkcs11/setup.sh
+
+      - name: Run PKCS#11 tests
+        run: |
+          . tests/pkcs11/.work/pkcs11.env
+          npm run test:pkcs11

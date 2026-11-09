@@ -35,12 +35,12 @@ jobs:
 
       # A unique prerelease version keeps these artifacts apart from real releases.
       # build-msi.ps1 turns X.Y.Z-<tag>.N into the MSI version X.Y.Z.N, so the
-      # suffix must keep exactly one numeric identifier.
+      # tag must contain no digits and be followed by one number.
       - name: Set build version
         id: version
         run: |
           BASE="$(node -p "require('./package.json').version.split('-')[0]")"
-          VERSION="$BASE-pkcs11.${{ github.run_number }}"
+          VERSION="$BASE-smartcard.${{ github.run_number }}"
           npm version "$VERSION" --no-git-tag-version --allow-same-version
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 

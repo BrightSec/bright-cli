@@ -28,29 +28,55 @@ export class RunRepeater implements CommandModule {
       return;
     }
 
+    RunRepeater.pkcs11ByArgs.set(args, RunRepeater.parsePkcs11(args));
+  }
+
+  private static parsePkcs11(
+    args: Arguments
+  ): RequestExecutorOptions['pkcs11'] {
+    const daemon = !!args.daemon;
     const provider = args.pkcs11Provider as string | undefined;
     const defaultModule = args.pkcs11Module as string | undefined;
+
+    // The service definition keeps only argv, so env-supplied entries would be lost.
+    if (daemon && process.env.REPEATER_PKCS11_CERT) {
+      throw new Error(
+        "REPEATER_PKCS11_CERT is not available to the daemon service, which does not inherit this shell's environment. Pass --pkcs11-cert instead."
+      );
+    }
+
     const resolvedProvider =
       provider &&
-      Pkcs11CertParser.resolveFile(provider, 'Option --pkcs11-provider');
+      Pkcs11CertParser.resolveFile(
+        provider,
+        'Option --pkcs11-provider',
+        daemon
+      );
 
     const certs = Pkcs11CertParser.parse(args.pkcs11Cert, {
       defaultModule:
         defaultModule &&
-        Pkcs11CertParser.resolveFile(defaultModule, 'Option --pkcs11-module'),
-      daemon: !!args.daemon
+        Pkcs11CertParser.resolveFile(
+          defaultModule,
+          'Option --pkcs11-module',
+          daemon
+        ),
+      daemon
     });
 
-    RunRepeater.pkcs11ByArgs.set(
-      args,
-      certs.length ? { certs, provider: resolvedProvider } : undefined
-    );
+    return certs.length ? { certs, provider: resolvedProvider } : undefined;
   }
 
   private static pkcs11Options(
     args: Arguments
   ): RequestExecutorOptions['pkcs11'] {
-    return RunRepeater.pkcs11ByArgs.get(args);
+    if (args.remove) {
+      return undefined;
+    }
+
+    return RunRepeater.pkcs11ByArgs.has(args)
+      ? RunRepeater.pkcs11ByArgs.get(args)
+      : RunRepeater.parsePkcs11(args);
   }
 
   public builder(argv: Argv): Argv {

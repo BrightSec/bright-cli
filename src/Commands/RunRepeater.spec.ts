@@ -286,6 +286,26 @@ describe('RunRepeater', () => {
       expect(handler).not.toHaveBeenCalled();
     });
 
+    it('should reject REPEATER_PKCS11_CERT when installing the daemon', async () => {
+      // arrange
+      process.env.REPEATER_PKCS11_CERT = JSON.stringify({
+        hostname: 'a.example.com',
+        module,
+        pinFile
+      });
+
+      // act
+      const result = settle(() =>
+        parseRepeater(['--daemon'], isolatedCli())
+      ).finally(() => delete process.env.REPEATER_PKCS11_CERT);
+
+      // assert
+      await expect(result).rejects.toThrow(
+        /REPEATER_PKCS11_CERT is not available to the daemon service/
+      );
+      expect(handler).not.toHaveBeenCalled();
+    });
+
     it('should not validate --pkcs11-cert entries when removing the daemon', async () => {
       // arrange
       const entry = JSON.stringify({ hostname: 'a.example.com', pinFile });

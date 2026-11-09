@@ -147,7 +147,7 @@ describe('Pkcs11CertParser', () => {
       expect(result.module).toBe(other);
     });
 
-    it('should resolve relative paths to absolute ones, as a daemon runs from another directory', () => {
+    it('should resolve relative paths to absolute ones', () => {
       // act
       const [result]: Pkcs11Cert[] = Pkcs11CertParser.parse([
         {
@@ -202,7 +202,12 @@ describe('Pkcs11CertParser', () => {
       [
         'a PIN variable read by bright-cli itself',
         { hostname: 'example.com', module, pinEnv: 'REPEATER_CARD_PIN' },
-        /starts with "REPEATER_"/
+        /starts with "REPEATER"/
+      ],
+      [
+        'a PIN variable read by bright-cli without an underscore',
+        { hostname: 'example.com', module, pinEnv: 'REPEATERPIN' },
+        /starts with "REPEATER"/
       ],
       [
         'a missing module file',
@@ -289,6 +294,37 @@ describe('Pkcs11CertParser', () => {
 
       // assert
       expect(act).toThrow(/"pinEnv" is not available to the daemon service/);
+    });
+
+    it('should reject relative paths when installing the daemon', () => {
+      // act
+      const act = () =>
+        Pkcs11CertParser.parse(
+          [
+            {
+              hostname: 'example.com',
+              module: relative(process.cwd(), module),
+              pinFile
+            }
+          ],
+          { daemon: true }
+        );
+
+      // assert
+      expect(act).toThrow(
+        /"module" .* must be an absolute path when installing the daemon/
+      );
+    });
+
+    it('should accept absolute paths when installing the daemon', () => {
+      // act
+      const result = Pkcs11CertParser.parse(
+        [{ hostname: 'example.com', module, pinFile, cert: certFile }],
+        { daemon: true }
+      );
+
+      // assert
+      expect(result).toHaveLength(1);
     });
 
     it('should reject a value that is not valid JSON', () => {

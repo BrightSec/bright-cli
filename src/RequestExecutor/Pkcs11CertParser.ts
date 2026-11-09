@@ -1,6 +1,6 @@
 import { Pkcs11Cert } from './Pkcs11Cert';
 import { accessSync, constants, Stats, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 
 export interface Pkcs11CertParserOptions {
   defaultModule?: string;
@@ -26,8 +26,8 @@ export class Pkcs11CertParser {
   ]);
   private static readonly HEX_ID = /^(?:[0-9a-f]{2})+$/i;
   private static readonly ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-  // `.env('REPEATER')` turns every REPEATER_* variable into a repeater option.
-  private static readonly RESERVED_ENV_PREFIX = /^REPEATER_/i;
+  // `.env('REPEATER')` turns every variable starting with REPEATER into a repeater option.
+  private static readonly RESERVED_ENV_PREFIX = /^REPEATER/i;
 
   /**
    * Turns raw `--pkcs11-cert` values into validated descriptors. A value is a
@@ -61,9 +61,21 @@ export class Pkcs11CertParser {
 
   /**
    * @returns the absolute path of an existing regular file.
-   * @throws Error mentioning `subject` when the file does not exist.
+   * @throws Error mentioning `subject` when the file does not exist, or when
+   * `daemon` is set and the path is relative.
    */
-  public static resolveFile(path: string, subject: string): string {
+  public static resolveFile(
+    path: string,
+    subject: string,
+    daemon = false
+  ): string {
+    // The daemon service re-parses the original arguments from its own working directory.
+    if (daemon && !isAbsolute(path)) {
+      throw new Error(
+        `${subject} ${path} must be an absolute path when installing the daemon.`
+      );
+    }
+
     const absolute = resolve(path);
     let stats: Stats | undefined;
 
@@ -148,12 +160,12 @@ export class Pkcs11CertParser {
     return {
       hostname,
       port: Pkcs11CertParser.port(raw),
-      module: Pkcs11CertParser.module(raw, defaultModule),
+      module: Pkcs11CertParser.module(raw, defaultModule, daemon),
       ...Pkcs11CertParser.pinSource(raw, env, daemon),
       token: Pkcs11CertParser.optionalString(raw, 'token'),
       object: Pkcs11CertParser.optionalString(raw, 'object'),
       id: Pkcs11CertParser.id(raw),
-      cert: Pkcs11CertParser.cert(raw),
+      cert: Pkcs11CertParser.cert(raw, daemon),
       maxConcurrency: Pkcs11CertParser.maxConcurrency(raw)
     };
   }
@@ -214,7 +226,8 @@ export class Pkcs11CertParser {
 
   private static module(
     raw: RawEntry,
-    defaultModule: string | undefined
+    defaultModule: string | undefined,
+    daemon: boolean
   ): string {
     const module =
       Pkcs11CertParser.optionalString(raw, 'module') ?? defaultModule;
@@ -225,7 +238,7 @@ export class Pkcs11CertParser {
       );
     }
 
-    return Pkcs11CertParser.resolveFile(module, '"module"');
+    return Pkcs11CertParser.resolveFile(module, '"module"', daemon);
   }
 
   private static pinSource(
@@ -242,7 +255,7 @@ export class Pkcs11CertParser {
 
     return pinEnv
       ? { pinEnv: Pkcs11CertParser.pinEnv(pinEnv, env, daemon) }
-      : { pinFile: Pkcs11CertParser.pinFile(pinFile) };
+      : { pinFile: Pkcs11CertParser.pinFile(pinFile, daemon) };
   }
 
   private static pinEnv(
@@ -259,7 +272,7 @@ export class Pkcs11CertParser {
 
     if (Pkcs11CertParser.RESERVED_ENV_PREFIX.test(name)) {
       throw new Error(
-        `"pinEnv" variable ${name} starts with "REPEATER_", which bright-cli reads as its own options. Choose another name.`
+        `"pinEnv" variable ${name} starts with "REPEATER", which bright-cli reads as its own options. Choose another name.`
       );
     }
 
@@ -278,8 +291,8 @@ export class Pkcs11CertParser {
     return name;
   }
 
-  private static pinFile(path: string): string {
-    const absolute = Pkcs11CertParser.resolveFile(path, '"pinFile"');
+  private static pinFile(path: string, daemon: boolean): string {
+    const absolute = Pkcs11CertParser.resolveFile(path, '"pinFile"', daemon);
 
     try {
       accessSync(absolute, constants.R_OK);
@@ -300,12 +313,12 @@ export class Pkcs11CertParser {
     return id?.toLowerCase();
   }
 
-  private static cert(raw: RawEntry): string {
+  private static cert(raw: RawEntry, daemon: boolean): string {
     const cert = Pkcs11CertParser.optionalString(raw, 'cert') ?? 'token';
 
     return cert === 'token'
       ? cert
-      : Pkcs11CertParser.resolveFile(cert, '"cert"');
+      : Pkcs11CertParser.resolveFile(cert, '"cert"', daemon);
   }
 
   private static maxConcurrency(raw: RawEntry): number {

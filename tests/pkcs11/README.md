@@ -28,6 +28,21 @@ npm run test:pkcs11
 
 Homebrew's libp11 is built against OpenSSL 4, which has no engines, so the engine test is skipped on macOS.
 
+## Run on Windows (Git Bash)
+
+Install [OpenSC](https://github.com/OpenSC/OpenSC/releases) (for `pkcs11-tool`), unpack the [SoftHSM2 portable build](https://github.com/disig/SoftHSM2-for-Windows/releases) and the [libp11 x64 build](https://github.com/OpenSC/libp11/releases) (which contains `pkcs11prov.dll`), and point `setup.sh` at them:
+
+```bash
+export PKCS11_TEST_SOFTHSM_DIR=/c/tools/SoftHSM2       # contains bin/ and lib/softhsm2-x64.dll
+export PKCS11_TEST_PROVIDER_DIR=/c/tools/libp11        # contains pkcs11prov.dll
+export PKCS11_TEST_OPENSSL_DIR="/c/Program Files/OpenSSL/bin"  # contains libcrypto-3-x64.dll
+tests/pkcs11/setup.sh
+. tests/pkcs11/.work/pkcs11.env
+npm run test:pkcs11
+```
+
+`pkcs11prov.dll` links against `libcrypto-3-x64.dll`, which libp11 doesn't ship; the generated `pkcs11.env` puts all three directories on `PATH` so Windows can resolve the DLLs. The engine test is skipped: the Windows binding has no engine loader.
+
 ## Manual testing
 
 After loading `pkcs11.env`, start the target with:
@@ -47,17 +62,18 @@ Inspect the token with `pkcs11-tool --module "$PKCS11_TEST_MODULE" --login --pin
 
 ## Environment written by `setup.sh`
 
-| Variable                                        | Purpose                                                                                                    |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `SOFTHSM2_CONF`                                 | Points SoftHSM2 at the throwaway token directory.                                                          |
-| `OPENSSL_MODULES` / `OPENSSL_ENGINES`           | Directories of the PKCS#11 provider / engine. Required: the binding's built-in paths point at its CI host. |
-| `PKCS11_PROVIDER_MODULE` / `PKCS11_MODULE_PATH` | Vendor PKCS#11 module, as read by pkcs11-provider / libp11.                                                |
-| `PKCS11_TEST_*`                                 | Token, object, PIN, PKI directory and provider/engine names used by the tests.                             |
+| Variable                                        | Purpose                                                                                                             |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `SOFTHSM2_CONF`                                 | Points SoftHSM2 at the throwaway token directory.                                                                   |
+| `OPENSSL_MODULES` / `OPENSSL_ENGINES`           | Directories of the PKCS#11 provider / engine. Required: the binding's built-in paths point at its CI host.          |
+| `PKCS11_PROVIDER_MODULE` / `PKCS11_MODULE_PATH` | Vendor PKCS#11 module, as read by pkcs11-provider / libp11.                                                         |
+| `OPENSSL_CONF` (Linux)                          | Loads pkcs11-provider with the `no-deinit` quirk, which concurrent provider instances need (see Known limitations). |
+| `PKCS11_TEST_*`                                 | Token, object, PIN, PKI directory and provider/engine names used by the tests.                                      |
 
 ## Known limitations
 
-- **One PKCS#11 module per process.** curl loads and unloads the provider for each easy handle, and the unload finalizes the process-wide module. A later fresh connection in the same process then fails with `PKCS11 Module has not been initialized yet`. Connection reuse avoids it. The tests run each case in its own process for this reason.
+- **One PKCS#11 module per process.** curl loads and unloads the provider together with each easy handle, and the unload tears down state of the process-wide module (`C_Finalize`, `C_CloseAllSessions`). A fresh connection on a _new_ handle in the same process then fails (`PKCS11 Module has not been initialized yet`, or `provider signature failure` with libp11). Keeping the easy handles long-lived avoids it with both providers. With several long-lived handles at once, pkcs11-provider additionally needs the `no-deinit` quirk (otherwise: `The specified key handle is not valid`); libp11 doesn't. Connection reuse reduces how often any of this matters. The tests run each case in its own process and cover the long-lived-handle mode explicitly.
 - **The PIN goes in the key URI for providers** (`?pin-value=`). Providers ignore `KEYPASSWD`; the engine honours it.
 - **libcurl reports every key-loading failure the same way.** A wrong PIN, a missing token and a bad module path all surface as `CURLE_SSL_CERTPROBLEM` (58).
 - **SoftHSM2 can't simulate readers or card removal**, and its signing is far faster than a real card's. Use a real card to check error handling and throughput.
-- **Not covered:** Windows, and the Node `tls` (WebSocket) path.
+- **Not covered:** the Node `tls` (WebSocket) path, which is out of scope.

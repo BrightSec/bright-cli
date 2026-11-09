@@ -37,3 +37,78 @@ jobs:
         run: |
           . tests/pkcs11/.work/pkcs11.env
           npm run test:pkcs11
+
+  softhsm-windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    env:
+      PKCS11_TEST_SOFTHSM_DIR: ${{ github.workspace }}/.pkcs11-tools/SoftHSM2
+      PKCS11_TEST_PROVIDER_DIR: ${{ github.workspace }}/.pkcs11-tools/libp11
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deps
+        uses: ./.github/workflows/composite/npm
+
+      # Pinned by SHA-256: these binaries end up loaded into the test process.
+      - name: Download SoftHSM2 and libp11
+        run: |
+          mkdir -p .pkcs11-tools && cd .pkcs11-tools
+          curl -fsSLo softhsm.zip https://github.com/disig/SoftHSM2-for-Windows/releases/download/v2.5.0/SoftHSM2-2.5.0-portable.zip
+          curl -fsSLo libp11.zip https://github.com/OpenSC/libp11/releases/download/libp11-0.4.21/libp11-0.4.21-x64.zip
+          curl -fsSLo opensc.msi https://github.com/OpenSC/OpenSC/releases/download/0.27.1/OpenSC-0.27.1_x64.msi
+          sha256sum -c - <<'EOF'
+          85273bcc1a6b90e877f7bb4f7e90221d57103d8f5241d154a79dd730a135b910  softhsm.zip
+          443f6ddbf15b437df0e37190c8673e76fa5f7268d22d99052d1e9b2fe1af46fd  libp11.zip
+          88ea45e848063ff5f3594a457b7f023223472eae9c9c543f8035f7689bb7b319  opensc.msi
+          EOF
+          unzip -q softhsm.zip
+          unzip -q libp11.zip -d libp11
+
+      - name: Install OpenSC (pkcs11-tool)
+        shell: pwsh
+        run: |
+          $p = Start-Process msiexec.exe -ArgumentList '/i', "$PWD\.pkcs11-tools\opensc.msi", '/qn', '/norestart' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "OpenSC install failed: $($p.ExitCode)" }
+          'C:\Program Files\OpenSC Project\OpenSC\tools' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # The libp11 Windows build links against the OpenSSL 3 DLL, which is not bundled with it.
+      - name: Locate libcrypto-3-x64.dll
+        run: |
+          for dir in "/c/Program Files/OpenSSL/bin" "/c/Program Files/OpenSSL-Win64/bin" "/c/Program Files/Git/mingw64/bin"; do
+            if [ -e "$dir/libcrypto-3-x64.dll" ]; then
+              echo "Using $dir/libcrypto-3-x64.dll: $(strings "$dir/libcrypto-3-x64.dll" | grep -m1 -E '^OpenSSL 3\.[0-9]+\.[0-9]+')"
+              echo "PKCS11_TEST_OPENSSL_DIR=$dir" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "libcrypto-3-x64.dll not found" >&2
+          exit 1
+
+      - name: Provision SoftHSM2 token
+        run: tests/pkcs11/setup.sh
+
+      - name: Run PKCS#11 tests
+        run: |
+          . tests/pkcs11/.work/pkcs11.env
+          npm run test:pkcs11
+
+      # Shows the provider lifecycle problem with a new easy handle per request,
+      # next to pooled connections and long-lived handles.
+      - name: Fresh connections in one process
+        continue-on-error: true
+        run: |
+          . tests/pkcs11/.work/pkcs11.env
+          npx ts-node tests/pkcs11/target.ts &
+          sleep 5
+          KEY="pkcs11:token=$PKCS11_TEST_TOKEN;object=$PKCS11_TEST_OBJECT;type=private?pin-value=$PKCS11_TEST_PIN"
+          for job in '"requests":50' '"requests":100,"pool":2' '"requests":50,"concurrency":2,"persistentHandles":true'; do
+            node -r ts-node/register/transpile-only tests/pkcs11/client.ts \
+              "{\"url\":\"https://localhost:8443/\",$job,\"curlOptions\":{\"SSLENGINE\":\"pkcs11prov\",\"SSLKEYTYPE\":\"PROV\",\"SSLKEY\":\"$KEY\",\"SSLCERT\":\"$PKCS11_TEST_DIR/client.pem\"}}" \
+              | grep PKCS11_CLIENT_RESULT \
+              | sed 's/^PKCS11_CLIENT_RESULT //' \
+              | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const r=JSON.parse(s);console.log('$job', 'ok='+r.succeeded, 'failed='+r.failed, [...new Set(r.errors.map(e=>e.message))].join('; '))})"
+          done

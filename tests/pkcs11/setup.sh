@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Provisions a throwaway SoftHSM2 token plus a test PKI for the PKCS#11 tests,
+# then writes the environment the tests (and a manual Repeater run) need to
+# tests/pkcs11/.work/pkcs11.env.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+WORK=${PKCS11_TEST_WORK_DIR:-$HERE/.work}
+TOKEN=${PKCS11_TEST_TOKEN:-bright-test}
+OBJECT=${PKCS11_TEST_OBJECT:-client}
+PIN=${PKCS11_TEST_PIN:-1234}
+SO_PIN=${PKCS11_TEST_SO_PIN:-5678}
+
+first_existing() {
+  for path in "$@"; do
+    if [ -e "$path" ]; then
+      echo "$path"
+      return 0
+    fi
+  done
+}
+
+require() {
+  command -v "$1" >/dev/null || {
+    echo "error: '$1' not found. $2" >&2
+    exit 1
+  }
+}
+
+case "$(uname -s)" in
+  Linux)
+    INSTALL_HINT='Install: apt-get install softhsm2 opensc pkcs11-provider libengine-pkcs11-openssl openssl'
+    MODULE=$(first_existing /usr/lib/*-linux-gnu/softhsm/libsofthsm2.so /usr/lib/softhsm/libsofthsm2.so /usr/lib64/pkcs11/libsofthsm2.so)
+    PROVIDER_LIB=$(first_existing /usr/lib/*-linux-gnu/ossl-modules/pkcs11.so /usr/lib64/ossl-modules/pkcs11.so)
+    PROVIDER=pkcs11
+    ENGINE_LIB=$(first_existing /usr/lib/*-linux-gnu/engines-3/pkcs11.so /usr/lib64/engines-3/pkcs11.so)
+    ;;
+  Darwin)
+    require brew 'Install Homebrew first.'
+    INSTALL_HINT='Install: brew install softhsm libp11 opensc'
+    BREW=$(brew --prefix)
+    MODULE=$(first_existing "$BREW/lib/softhsm/libsofthsm2.so")
+    # Homebrew's libp11 is built against OpenSSL 4, which has no engines, so only its provider is available.
+    PROVIDER_LIB=$(first_existing "$BREW/lib/ossl-modules/pkcs11prov.dylib")
+    PROVIDER=pkcs11prov
+    ENGINE_LIB=
+    ;;
+  *)
+    echo "error: unsupported OS $(uname -s); use the Docker image (see README.md)" >&2
+    exit 1
+    ;;
+esac
+
+require softhsm2-util "$INSTALL_HINT"
+require pkcs11-tool "$INSTALL_HINT"
+require openssl "$INSTALL_HINT"
+[ -n "$MODULE" ] || { echo "error: SoftHSM2 module not found. $INSTALL_HINT" >&2; exit 1; }
+[ -n "$PROVIDER_LIB" ] || { echo "error: PKCS#11 OpenSSL provider not found. $INSTALL_HINT" >&2; exit 1; }
+
+rm -rf "$WORK"
+mkdir -p "$WORK/tokens" "$WORK/pki"
+PKI=$WORK/pki
+
+cat > "$WORK/softhsm2.conf" <<EOF
+directories.tokendir = $WORK/tokens
+objectstore.backend = file
+log.level = ERROR
+EOF
+export SOFTHSM2_CONF=$WORK/softhsm2.conf
+
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=Bright PKCS11 Test CA" \
+  -keyout "$PKI/ca.key" -out "$PKI/ca.pem" 2>/dev/null
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+  -keyout "$PKI/server.key" -out "$PKI/server.pem" 2>/dev/null
+openssl req -newkey rsa:2048 -nodes -subj "/CN=bright-pkcs11-client" \
+  -keyout "$PKI/client.key" -out "$PKI/client.csr" 2>/dev/null
+openssl x509 -req -days 30 -in "$PKI/client.csr" -CA "$PKI/ca.pem" -CAkey "$PKI/ca.key" \
+  -CAcreateserial -out "$PKI/client.pem" 2>/dev/null
+openssl pkcs8 -topk8 -nocrypt -in "$PKI/client.key" -out "$PKI/client.pk8"
+openssl x509 -in "$PKI/client.pem" -outform der -out "$PKI/client.der"
+
+softhsm2-util --init-token --free --label "$TOKEN" --pin "$PIN" --so-pin "$SO_PIN" >/dev/null
+softhsm2-util --import "$PKI/client.pk8" --token "$TOKEN" --label "$OBJECT" --id 01 --pin "$PIN" >/dev/null
+pkcs11-tool --module "$MODULE" --token-label "$TOKEN" --login --pin "$PIN" \
+  --write-object "$PKI/client.der" --type cert --label "$OBJECT" --id 01 >/dev/null
+# The private key must never exist outside the token, as on a real smart card.
+rm -f "$PKI/client.key" "$PKI/client.pk8" "$PKI/client.csr"
+
+{
+  echo "export SOFTHSM2_CONF='$WORK/softhsm2.conf'"
+  echo "export PKCS11_TEST_DIR='$PKI'"
+  echo "export PKCS11_TEST_MODULE='$MODULE'"
+  echo "export PKCS11_TEST_TOKEN='$TOKEN'"
+  echo "export PKCS11_TEST_OBJECT='$OBJECT'"
+  echo "export PKCS11_TEST_PIN='$PIN'"
+  echo "export PKCS11_TEST_PROVIDER='$PROVIDER'"
+  # The binding's compiled-in module/engine directories point at its CI build host.
+  echo "export OPENSSL_MODULES='$(dirname "$PROVIDER_LIB")'"
+  # pkcs11-provider reads PKCS11_PROVIDER_MODULE; libp11 (provider and engine) reads PKCS11_MODULE_PATH.
+  echo "export PKCS11_PROVIDER_MODULE='$MODULE'"
+  echo "export PKCS11_MODULE_PATH='$MODULE'"
+  if [ -n "$ENGINE_LIB" ]; then
+    echo "export OPENSSL_ENGINES='$(dirname "$ENGINE_LIB")'"
+    echo "export PKCS11_TEST_ENGINE='pkcs11'"
+  fi
+} > "$WORK/pkcs11.env"
+
+pkcs11-tool --module "$MODULE" --token-label "$TOKEN" --login --pin "$PIN" --list-objects 2>/dev/null \
+  | grep -E 'Object;|label:' | sed 's/^/  /'
+echo "Token '$TOKEN' ready. Load the environment with: . $WORK/pkcs11.env"

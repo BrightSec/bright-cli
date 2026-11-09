@@ -4,6 +4,8 @@ export * from './HttpRequestExecutor';
 export * from './WsRequestExecutor';
 export * from './Response';
 export * from './Request';
+export * from './Pkcs11Cert';
+export * from './Pkcs11CertParser';
 export * from './Protocol';
 export * from './Certificates';
 export * from './CertificatesLoader';

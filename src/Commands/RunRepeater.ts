@@ -1,15 +1,46 @@
-import { Cert, RequestExecutorOptions } from '../RequestExecutor';
+import {
+  Cert,
+  Pkcs11CertParser,
+  RequestExecutorOptions
+} from '../RequestExecutor';
 import { ErrorMessageFactory, Helpers, logger } from '../Utils';
 import container from '../container';
 import { DefaultRepeaterServerOptions, RepeaterLauncher } from '../Repeater';
 import { Arguments, Argv, CommandModule } from 'yargs';
 import { captureException } from '@sentry/node';
+import { existsSync } from 'node:fs';
 import { normalize } from 'node:path';
 import process from 'node:process';
 
 export class RunRepeater implements CommandModule {
   public readonly command = 'repeater [options]';
   public readonly describe = 'Starts an on-prem agent.';
+
+  private static checkPkcs11(args: Arguments): void {
+    const provider = args.pkcs11Provider as string | undefined;
+
+    if (provider !== undefined && !existsSync(provider)) {
+      throw new Error(
+        `Option --pkcs11-provider has wrong value: ${provider} does not exist.`
+      );
+    }
+
+    Pkcs11CertParser.parse(args.pkcs11Cert as unknown[], {
+      defaultModule: args.pkcs11Module as string
+    });
+  }
+
+  private static pkcs11Options(
+    args: Arguments
+  ): RequestExecutorOptions['pkcs11'] {
+    const certs = Pkcs11CertParser.parse(args.pkcs11Cert as unknown[], {
+      defaultModule: args.pkcs11Module as string
+    });
+
+    return certs.length
+      ? { certs, provider: args.pkcs11Provider as string }
+      : undefined;
+  }
 
   public builder(argv: Argv): Argv {
     return argv
@@ -85,9 +116,12 @@ export class RunRepeater implements CommandModule {
         string: true,
         describe:
           'The certificate must be in PKCS, or PEM format. Example: {"hostname": "example.com", "path": "./example.pem", "passphrase": "pa$$word", "port": "1234"}.',
-        coerce(args: string[]): Cert[] {
+        coerce(args: (string | Cert)[]): Cert[] {
+          // The config file supplies objects, the CLI and env supply JSON strings.
           return args
-            .map((arg: string) => JSON.parse(arg))
+            .map((arg: string | Cert) =>
+              typeof arg === 'string' ? JSON.parse(arg) : arg
+            )
             .map(({ path, hostname, passphrase, port }: Cert) => {
               if (!path) {
                 logger.error(
@@ -111,6 +145,27 @@ export class RunRepeater implements CommandModule {
               };
             });
         }
+      })
+      .option('pkcs11-cert', {
+        requiresArg: true,
+        array: true,
+        describe:
+          'Client certificate whose private key is on a PKCS#11 token (smart card, USB token, HSM), for HTTPS targets. ' +
+          'Required: "hostname", "pinFile" or "pinEnv", and "module" unless --pkcs11-module is set. ' +
+          'Optional: "port", "token", "object", "id", "cert" ("token" or a PEM file path), "maxConcurrency" (default 1). ' +
+          'Example: {"hostname": "example.com", "module": "/usr/lib/opensc-pkcs11.so", "pinFile": "/run/secrets/card.pin"}'
+      })
+      .option('pkcs11-module', {
+        requiresArg: true,
+        string: true,
+        describe:
+          'Default PKCS#11 library of the card vendor for --pkcs11-cert entries without "module". Example: "C:\\Program Files\\Yubico\\Yubico PIV Tool\\bin\\libykcs11.dll"'
+      })
+      .option('pkcs11-provider', {
+        requiresArg: true,
+        string: true,
+        describe:
+          'Path to the OpenSSL PKCS#11 provider plugin, if not in the default location.'
       })
       .option('experimental-connection-reuse', {
         deprecated: 'Use --ntlm instead',
@@ -259,6 +314,8 @@ export class RunRepeater implements CommandModule {
           }
         }
 
+        RunRepeater.checkPkcs11(args);
+
         return true;
       })
       .middleware((args: Arguments) => {
@@ -269,6 +326,7 @@ export class RunRepeater implements CommandModule {
               timeout: args.timeout as number,
               proxyUrl: (args.proxyTarget ?? args.proxy) as string,
               certs: args.cert as Cert[],
+              pkcs11: RunRepeater.pkcs11Options(args),
               maxBodySize: Infinity,
               maxContentLength: 100,
               reuseConnection:

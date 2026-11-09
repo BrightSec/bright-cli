@@ -1,4 +1,8 @@
-import { Cert, RequestExecutorOptions } from '../RequestExecutor';
+import {
+  Cert,
+  Pkcs11CertParser,
+  RequestExecutorOptions
+} from '../RequestExecutor';
 import { ErrorMessageFactory, Helpers, logger } from '../Utils';
 import container from '../container';
 import { DefaultRepeaterServerOptions, RepeaterLauncher } from '../Repeater';
@@ -8,8 +12,72 @@ import { normalize } from 'node:path';
 import process from 'node:process';
 
 export class RunRepeater implements CommandModule {
+  // Validation and registration see the same args object; parsing once keeps
+  // the file and env checks from running twice.
+  private static readonly pkcs11ByArgs = new WeakMap<
+    Arguments,
+    RequestExecutorOptions['pkcs11']
+  >();
+
   public readonly command = 'repeater [options]';
   public readonly describe = 'Starts an on-prem agent.';
+
+  private static checkPkcs11(args: Arguments): void {
+    // Removing the daemon must work even if the card setup has since changed.
+    if (args.remove) {
+      return;
+    }
+
+    RunRepeater.pkcs11ByArgs.set(args, RunRepeater.parsePkcs11(args));
+  }
+
+  private static parsePkcs11(
+    args: Arguments
+  ): RequestExecutorOptions['pkcs11'] {
+    const daemon = !!args.daemon;
+    const provider = args.pkcs11Provider as string | undefined;
+    const defaultModule = args.pkcs11Module as string | undefined;
+
+    // The service definition keeps only argv, so env-supplied entries would be lost.
+    if (daemon && process.env.REPEATER_PKCS11_CERT) {
+      throw new Error(
+        "REPEATER_PKCS11_CERT is not available to the daemon service, which does not inherit this shell's environment. Pass --pkcs11-cert instead."
+      );
+    }
+
+    const resolvedProvider =
+      provider &&
+      Pkcs11CertParser.resolveFile(
+        provider,
+        'Option --pkcs11-provider',
+        daemon
+      );
+
+    const certs = Pkcs11CertParser.parse(args.pkcs11Cert, {
+      defaultModule:
+        defaultModule &&
+        Pkcs11CertParser.resolveFile(
+          defaultModule,
+          'Option --pkcs11-module',
+          daemon
+        ),
+      daemon
+    });
+
+    return certs.length ? { certs, provider: resolvedProvider } : undefined;
+  }
+
+  private static pkcs11Options(
+    args: Arguments
+  ): RequestExecutorOptions['pkcs11'] {
+    if (args.remove) {
+      return undefined;
+    }
+
+    return RunRepeater.pkcs11ByArgs.has(args)
+      ? RunRepeater.pkcs11ByArgs.get(args)
+      : RunRepeater.parsePkcs11(args);
+  }
 
   public builder(argv: Argv): Argv {
     return argv
@@ -85,9 +153,12 @@ export class RunRepeater implements CommandModule {
         string: true,
         describe:
           'The certificate must be in PKCS, or PEM format. Example: {"hostname": "example.com", "path": "./example.pem", "passphrase": "pa$$word", "port": "1234"}.',
-        coerce(args: string[]): Cert[] {
-          return args
-            .map((arg: string) => JSON.parse(arg))
+        coerce(args: (string | Cert)[] | Cert): Cert[] {
+          // The config file supplies objects (or a single object), the CLI and env JSON strings.
+          return (Array.isArray(args) ? args : [args])
+            .map((arg: string | Cert) =>
+              typeof arg === 'string' ? JSON.parse(arg) : arg
+            )
             .map(({ path, hostname, passphrase, port }: Cert) => {
               if (!path) {
                 logger.error(
@@ -111,6 +182,27 @@ export class RunRepeater implements CommandModule {
               };
             });
         }
+      })
+      .option('pkcs11-cert', {
+        requiresArg: true,
+        array: true,
+        describe:
+          'Client certificate whose private key is on a PKCS#11 token (smart card, USB token, HSM), for HTTPS targets. ' +
+          'Required: "hostname", "pinFile" or "pinEnv", and "module" unless --pkcs11-module is set. ' +
+          'Optional: "port", "token", "object", "id", "cert" ("token" or a PEM file path), "maxConcurrency" (default 1). ' +
+          'Example: {"hostname": "example.com", "module": "/usr/lib/opensc-pkcs11.so", "pinFile": "/run/secrets/card.pin"}'
+      })
+      .option('pkcs11-module', {
+        requiresArg: true,
+        string: true,
+        describe:
+          'Default PKCS#11 library of the card vendor for --pkcs11-cert entries without "module". Example: "C:\\Program Files\\Yubico\\Yubico PIV Tool\\bin\\libykcs11.dll"'
+      })
+      .option('pkcs11-provider', {
+        requiresArg: true,
+        string: true,
+        describe:
+          'Path to the OpenSSL PKCS#11 provider plugin, if not in the default location.'
       })
       .option('experimental-connection-reuse', {
         deprecated: 'Use --ntlm instead',
@@ -259,6 +351,8 @@ export class RunRepeater implements CommandModule {
           }
         }
 
+        RunRepeater.checkPkcs11(args);
+
         return true;
       })
       .middleware((args: Arguments) => {
@@ -269,6 +363,7 @@ export class RunRepeater implements CommandModule {
               timeout: args.timeout as number,
               proxyUrl: (args.proxyTarget ?? args.proxy) as string,
               certs: args.cert as Cert[],
+              pkcs11: RunRepeater.pkcs11Options(args),
               maxBodySize: Infinity,
               maxContentLength: 100,
               reuseConnection:

@@ -1,0 +1,227 @@
+# TODO: temporary. Remove before merging feat/pkcs11-smart-card into next.
+#
+# Dry run of the artifact chain that deploy.yml runs after semantic-release cuts
+# a release on next: npm package, pkg executables + MSI, Docker image and Helm
+# chart. Nothing is published, signed or attached to a release; every artifact
+# is smoke-tested and kept as a workflow artifact instead.
+name: TMP / PKCS#11 build chain
+
+on:
+  push:
+    branches:
+      - feat/pkcs11-smart-card
+  pull_request:
+    branches:
+      - feat/pkcs11-smart-card
+  workflow_dispatch:
+
+concurrency:
+  group: '${{ github.workflow }}-${{ github.ref }}'
+  cancel-in-progress: true
+
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        uses: ./.github/workflows/composite/npm
+
+      # A unique prerelease version keeps these artifacts apart from real releases.
+      - name: Set build version
+        id: version
+        run: |
+          VERSION="$(node -p "require('./package.json').version").pkcs11.${{ github.run_number }}.${{ github.run_attempt }}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set default distribution
+        run: npm pkg set brightCli.distribution=package
+
+      - name: Build package
+        run: npm run build
+
+      - name: Pack artifacts
+        run: |
+          npm pack
+          mv brightsec-cli-*.tgz brightsec-cli.tgz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: |
+            dist
+            Dockerfile
+            package.json
+            package-lock.json
+            README.md
+            LICENSE
+            tools
+            helm
+            brightsec-cli.tgz
+
+  generate-binary:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: win
+          - os: macos-14
+            target: macos
+          - os: ubuntu-22.04
+            target: linux
+            container:
+              image: redhat/ubi8
+              options: '--user root'
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+
+      - name: Install dev-deps
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          dnf install -y dnf-utils \
+          && dnf install -y python3 gcc gcc-c++ make \
+          && rm -rf /var/cache/dnf
+
+      - name: Install deps
+        uses: ./.github/workflows/composite/npm
+
+      - name: Set distribution
+        run: npx json -I -f package.json -e "this.brightCli.distribution='${{ matrix.target }}-executable'"
+
+      - name: Build executable file
+        run: npm run build:pkg -- -t node24-${{ matrix.target }}-x64
+
+      - name: Set Windows version info
+        if: startsWith(matrix.os, 'win')
+        run: node .\tools\scripts\set-windows-version-info.mjs .\bin\cli.exe
+
+      - name: Build MSI
+        if: startsWith(matrix.os, 'win')
+        run: .\tools\scripts\build-msi.ps1
+        shell: pwsh
+
+      - name: Smoke-test executable
+        shell: bash
+        run: |
+          BIN=./bin/cli
+          [ -f ./bin/cli.exe ] && BIN=./bin/cli.exe
+          "$BIN" --version | tee version.txt
+          grep -q "${{ needs.build.outputs.version }}" version.txt
+          "$BIN" repeater --help > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ format('bright-cli-{0}-x64', matrix.target) }}
+          path: |
+            bin/cli
+            bin/cli.exe
+            bin/bright-cli.msi
+          if-no-files-found: error
+
+  npm-install:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install package globally
+        run: npm i -g ./brightsec-cli.tgz
+
+      - name: Smoke-test installed CLI
+        shell: bash
+        run: |
+          bright-cli --version | tee version.txt
+          grep -q "${{ needs.build.outputs.version }}" version.txt
+          bright-cli repeater --help > /dev/null
+
+  docker:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+
+      # The release Dockerfile installs the CLI from the npm registry, which only
+      # has published versions; install the packed tarball instead.
+      - name: Point Dockerfile at the packed tarball
+        run: |
+          sed -e 's#npm i -g -q @brightsec/cli@${VERSION}#npm i -g -q /tmp/brightsec-cli.tgz#' \
+              -e '/^# install @brightsec\/cli from NPM/i COPY brightsec-cli.tgz /tmp/brightsec-cli.tgz' \
+              Dockerfile > Dockerfile.ci
+          grep -q 'npm i -g -q /tmp/brightsec-cli.tgz' Dockerfile.ci
+          grep -q '^COPY brightsec-cli.tgz' Dockerfile.ci
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build multi-platform image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.ci
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=${{ needs.build.outputs.version }}
+          tags: brightsec/cli:pkcs11-ci
+
+      - name: Load amd64 image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.ci
+          platforms: linux/amd64
+          load: true
+          build-args: |
+            VERSION=${{ needs.build.outputs.version }}
+          tags: brightsec/cli:pkcs11-ci
+
+      - name: Smoke-test image
+        run: |
+          docker run --rm brightsec/cli:pkcs11-ci --version | tee version.txt
+          grep -q "${{ needs.build.outputs.version }}" version.txt
+          docker run --rm brightsec/cli:pkcs11-ci repeater --help > /dev/null
+
+  helm:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+
+      - uses: azure/setup-helm@v4
+
+      - name: Lint and package chart
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          helm lint helm/bright-cli
+          helm package helm/bright-cli --version "$VERSION" --app-version "v$VERSION" --destination .

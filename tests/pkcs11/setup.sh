@@ -140,6 +140,27 @@ rm -f "$PKI/client.key" "$PKI/client.pk8" "$PKI/client.csr"
   fi
 } > "$WORK/pkcs11.env"
 
+# pkcs11-provider tears down module state shared by its other instances when one
+# of them is unloaded; the Repeater runs it with this quirk, so the tests do too.
+if [ "$PROVIDER" = pkcs11 ]; then
+  cat > "$WORK/openssl.cnf" <<EOF
+openssl_conf = openssl_init
+[openssl_init]
+providers = provider_sect
+[provider_sect]
+default = default_sect
+pkcs11 = pkcs11_sect
+[default_sect]
+activate = 1
+[pkcs11_sect]
+module = $PROVIDER_LIB
+pkcs11-module-path = $MODULE
+pkcs11-module-quirks = no-deinit
+activate = 1
+EOF
+  echo "export OPENSSL_CONF='$(native "$WORK/openssl.cnf")'" >> "$WORK/pkcs11.env"
+fi
+
 pkcs11-tool --module "$(native "$MODULE")" --token-label "$TOKEN" --login --pin "$PIN" --list-objects 2>/dev/null \
   | grep -E 'Object;|label:' | sed 's/^/  /'
 echo "Token '$TOKEN' ready. Load the environment with: . $WORK/pkcs11.env"

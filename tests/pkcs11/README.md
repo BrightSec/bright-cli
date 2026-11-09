@@ -62,16 +62,17 @@ Inspect the token with `pkcs11-tool --module "$PKCS11_TEST_MODULE" --login --pin
 
 ## Environment written by `setup.sh`
 
-| Variable                                        | Purpose                                                                                                    |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `SOFTHSM2_CONF`                                 | Points SoftHSM2 at the throwaway token directory.                                                          |
-| `OPENSSL_MODULES` / `OPENSSL_ENGINES`           | Directories of the PKCS#11 provider / engine. Required: the binding's built-in paths point at its CI host. |
-| `PKCS11_PROVIDER_MODULE` / `PKCS11_MODULE_PATH` | Vendor PKCS#11 module, as read by pkcs11-provider / libp11.                                                |
-| `PKCS11_TEST_*`                                 | Token, object, PIN, PKI directory and provider/engine names used by the tests.                             |
+| Variable                                        | Purpose                                                                                                             |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `SOFTHSM2_CONF`                                 | Points SoftHSM2 at the throwaway token directory.                                                                   |
+| `OPENSSL_MODULES` / `OPENSSL_ENGINES`           | Directories of the PKCS#11 provider / engine. Required: the binding's built-in paths point at its CI host.          |
+| `PKCS11_PROVIDER_MODULE` / `PKCS11_MODULE_PATH` | Vendor PKCS#11 module, as read by pkcs11-provider / libp11.                                                         |
+| `OPENSSL_CONF` (Linux)                          | Loads pkcs11-provider with the `no-deinit` quirk, which concurrent provider instances need (see Known limitations). |
+| `PKCS11_TEST_*`                                 | Token, object, PIN, PKI directory and provider/engine names used by the tests.                                      |
 
 ## Known limitations
 
-- **One PKCS#11 module per process.** curl loads and unloads the provider together with each easy handle, and the unload tears down state of the process-wide module (`C_Finalize`, `C_CloseAllSessions`). A fresh connection on a _new_ handle in the same process then fails (`PKCS11 Module has not been initialized yet`, or `provider signature failure` with libp11). Keeping the easy handles long-lived avoids it with both providers, without quirks or patches; connection reuse reduces how often it matters. The tests run each case in its own process and cover the long-lived-handle mode explicitly.
+- **One PKCS#11 module per process.** curl loads and unloads the provider together with each easy handle, and the unload tears down state of the process-wide module (`C_Finalize`, `C_CloseAllSessions`). A fresh connection on a _new_ handle in the same process then fails (`PKCS11 Module has not been initialized yet`, or `provider signature failure` with libp11). Keeping the easy handles long-lived avoids it with both providers. With several long-lived handles at once, pkcs11-provider additionally needs the `no-deinit` quirk (otherwise: `The specified key handle is not valid`); libp11 doesn't. Connection reuse reduces how often any of this matters. The tests run each case in its own process and cover the long-lived-handle mode explicitly.
 - **The PIN goes in the key URI for providers** (`?pin-value=`). Providers ignore `KEYPASSWD`; the engine honours it.
 - **libcurl reports every key-loading failure the same way.** A wrong PIN, a missing token and a bad module path all surface as `CURLE_SSL_CERTPROBLEM` (58).
 - **SoftHSM2 can't simulate readers or card removal**, and its signing is far faster than a real card's. Use a real card to check error handling and throughput.

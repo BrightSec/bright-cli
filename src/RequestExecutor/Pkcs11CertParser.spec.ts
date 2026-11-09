@@ -2,7 +2,7 @@ import { Pkcs11CertParser } from './Pkcs11CertParser';
 import { Pkcs11Cert } from './Pkcs11Cert';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 describe('Pkcs11CertParser', () => {
   // `it.each` tables are built when the suite is defined, so the fixtures must exist by then.
@@ -14,10 +14,13 @@ describe('Pkcs11CertParser', () => {
   writeFileSync(pinFile, '1234');
   writeFileSync(certFile, '');
 
+  const canMakeFilesUnreadable =
+    process.platform !== 'win32' && process.getuid?.() !== 0;
+
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
   describe('parse', () => {
-    it('returns no descriptors when no entries are given', () => {
+    it('should return no descriptors when no entries are given', () => {
       // act
       const result = Pkcs11CertParser.parse(undefined);
 
@@ -25,7 +28,7 @@ describe('Pkcs11CertParser', () => {
       expect(result).toEqual([]);
     });
 
-    it('applies the defaults to a minimal entry given as a JSON string', () => {
+    it('should apply the defaults to a minimal entry given as a JSON string', () => {
       // arrange
       const entry = JSON.stringify({
         hostname: 'example.com',
@@ -52,7 +55,7 @@ describe('Pkcs11CertParser', () => {
       ]);
     });
 
-    it('accepts an entry given as an object, as the config file supplies it', () => {
+    it('should accept an entry given as an object, as the config file supplies it', () => {
       // arrange
       const entry = {
         hostname: '*.example.com',
@@ -87,7 +90,38 @@ describe('Pkcs11CertParser', () => {
       ]);
     });
 
-    it('uses the default module when the entry has none', () => {
+    it('should accept a single object that is not wrapped in an array', () => {
+      // act
+      const result = Pkcs11CertParser.parse({
+        hostname: 'example.com',
+        module,
+        pinFile
+      });
+
+      // assert
+      expect(result).toEqual([
+        expect.objectContaining({ hostname: 'example.com' })
+      ]);
+    });
+
+    it('should expand a JSON array string, as an environment variable supplies several entries', () => {
+      // arrange
+      const value = JSON.stringify([
+        { hostname: 'a.example.com', module, pinFile },
+        { hostname: 'b.example.com', module, pinFile }
+      ]);
+
+      // act
+      const result = Pkcs11CertParser.parse([value]);
+
+      // assert
+      expect(result.map((cert: Pkcs11Cert) => cert.hostname)).toEqual([
+        'a.example.com',
+        'b.example.com'
+      ]);
+    });
+
+    it('should use the default module when the entry has none', () => {
       // act
       const [result]: Pkcs11Cert[] = Pkcs11CertParser.parse(
         [{ hostname: 'example.com', pinFile }],
@@ -98,7 +132,7 @@ describe('Pkcs11CertParser', () => {
       expect(result.module).toBe(module);
     });
 
-    it('prefers the module of the entry over the default module', () => {
+    it('should prefer the module of the entry over the default module', () => {
       // arrange
       const other = join(dir, 'other-pkcs11.so');
       writeFileSync(other, '');
@@ -111,6 +145,21 @@ describe('Pkcs11CertParser', () => {
 
       // assert
       expect(result.module).toBe(other);
+    });
+
+    it('should resolve relative paths to absolute ones, as a daemon runs from another directory', () => {
+      // act
+      const [result]: Pkcs11Cert[] = Pkcs11CertParser.parse([
+        {
+          hostname: 'example.com',
+          module: relative(process.cwd(), module),
+          pinFile: relative(process.cwd(), pinFile),
+          cert: relative(process.cwd(), certFile)
+        }
+      ]);
+
+      // assert
+      expect(result).toMatchObject({ module, pinFile, cert: certFile });
     });
 
     it.each([
@@ -148,17 +197,27 @@ describe('Pkcs11CertParser', () => {
       [
         'an unset PIN variable',
         { hostname: 'example.com', module, pinEnv: 'MISSING_PIN' },
-        /"MISSING_PIN" referenced by "pinEnv" is not set/
+        /environment variable MISSING_PIN referenced by "pinEnv" is not set/
+      ],
+      [
+        'a PIN variable read by bright-cli itself',
+        { hostname: 'example.com', module, pinEnv: 'REPEATER_CARD_PIN' },
+        /starts with "REPEATER_"/
       ],
       [
         'a missing module file',
         { hostname: 'example.com', module: join(dir, 'nope.so'), pinFile },
-        /"module" file .* does not exist/
+        /"module" .* does not exist/
+      ],
+      [
+        'a module path that is a directory',
+        { hostname: 'example.com', module: dir, pinFile },
+        /"module" .* is not a file/
       ],
       [
         'a missing PIN file',
         { hostname: 'example.com', module, pinFile: join(dir, 'nope.pin') },
-        /"pinFile" file .* does not exist/
+        /"pinFile" .* does not exist/
       ],
       [
         'a missing cert file',
@@ -168,7 +227,7 @@ describe('Pkcs11CertParser', () => {
           pinFile,
           cert: join(dir, 'nope.pem')
         },
-        /"cert" file .* does not exist/
+        /"cert" .* does not exist/
       ],
       [
         'port 0',
@@ -200,7 +259,7 @@ describe('Pkcs11CertParser', () => {
         { hostname: 'example.com', module, pinFile, maxConcurrency: 1.5 },
         /"maxConcurrency" must be an integer/
       ]
-    ])('rejects an entry with %s', (_case, entry, message) => {
+    ])('should reject an entry with %s', (_case, entry, message) => {
       // act
       const act = () => Pkcs11CertParser.parse([entry], { env: {} });
 
@@ -208,23 +267,47 @@ describe('Pkcs11CertParser', () => {
       expect(act).toThrow(message);
     });
 
-    it('rejects an entry that is not valid JSON', () => {
+    it('should reject a PIN typed into "pinEnv" without repeating it', () => {
+      // act
+      const act = () =>
+        Pkcs11CertParser.parse([
+          { hostname: 'example.com', module, pinEnv: '483920' }
+        ]);
+
+      // assert
+      expect(act).toThrow(/must be the name of an environment variable/);
+      expect(act).not.toThrow(/483920/);
+    });
+
+    it('should reject "pinEnv" for a daemon, whose service does not inherit the environment', () => {
+      // act
+      const act = () =>
+        Pkcs11CertParser.parse(
+          [{ hostname: 'example.com', module, pinEnv: 'CARD_PIN' }],
+          { env: { CARD_PIN: '1234' }, daemon: true }
+        );
+
+      // assert
+      expect(act).toThrow(/"pinEnv" is not available to the daemon service/);
+    });
+
+    it('should reject a value that is not valid JSON', () => {
       // act
       const act = () => Pkcs11CertParser.parse(['{"hostname":']);
 
       // assert
-      expect(act).toThrow('Option --pkcs11-cert #1: invalid JSON.');
+      expect(act).toThrow('Option --pkcs11-cert value #1: invalid JSON.');
     });
 
-    it('rejects an entry that is not an object', () => {
+    it('should reject an entry that is not an object', () => {
       // act
-      const act = () => Pkcs11CertParser.parse(['["example.com"]']);
+      const act = () => Pkcs11CertParser.parse(['"example.com"']);
 
       // assert
       expect(act).toThrow('Option --pkcs11-cert #1: expected a JSON object.');
     });
 
-    it('names the position of the failing entry', () => {
+    it('should name the position of the failing entry', () => {
       // arrange
       const entries = [
         { hostname: 'a.example.com', module, pinFile },
@@ -240,23 +323,50 @@ describe('Pkcs11CertParser', () => {
       );
     });
 
-    it('rejects a pin file the process cannot read', () => {
-      // arrange
-      if (process.platform === 'win32' || process.getuid?.() === 0) {
-        return;
-      }
-      const unreadable = join(dir, 'unreadable.pin');
-      writeFileSync(unreadable, '1234');
-      chmodSync(unreadable, 0o000);
+    (canMakeFilesUnreadable ? it : it.skip)(
+      'should reject a PIN file the process cannot read',
+      () => {
+        // arrange
+        const unreadable = join(dir, 'unreadable.pin');
+        writeFileSync(unreadable, '1234');
+        chmodSync(unreadable, 0o000);
 
+        // act
+        const act = () =>
+          Pkcs11CertParser.parse([
+            { hostname: 'example.com', module, pinFile: unreadable }
+          ]);
+
+        // assert
+        expect(act).toThrow(/"pinFile" .* is not readable/);
+      }
+    );
+  });
+
+  describe('resolveFile', () => {
+    it('should return the absolute path of an existing file', () => {
       // act
-      const act = () =>
-        Pkcs11CertParser.parse([
-          { hostname: 'example.com', module, pinFile: unreadable }
-        ]);
+      const result = Pkcs11CertParser.resolveFile(
+        relative(process.cwd(), module),
+        'Option --pkcs11-module'
+      );
 
       // assert
-      expect(act).toThrow(/"pinFile" .* is not readable/);
+      expect(result).toBe(module);
+    });
+
+    it('should name the subject when the file does not exist', () => {
+      // act
+      const act = () =>
+        Pkcs11CertParser.resolveFile(
+          join(dir, 'missing.so'),
+          'Option --pkcs11-provider'
+        );
+
+      // assert
+      expect(act).toThrow(
+        /^Option --pkcs11-provider .*missing\.so does not exist or is not a file\.$/
+      );
     });
   });
 });

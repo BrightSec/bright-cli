@@ -1,10 +1,10 @@
 import 'reflect-metadata';
 import { RunRepeater } from './RunRepeater';
-import { CliBuilder, CliInfo, ConfigReader } from '../Config';
+import { CliBuilder, CliConfig, CliInfo, ConfigReader } from '../Config';
 import { DefaultRepeaterServerOptions } from '../Repeater';
 import { RequestExecutorOptions } from '../RequestExecutor';
 import container from '../container';
-import { instance, mock } from 'ts-mockito';
+import { anything, instance, mock, when } from 'ts-mockito';
 import { Arguments, Argv } from 'yargs';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -49,11 +49,9 @@ describe('RunRepeater', () => {
   const settle = (parse: () => unknown): Promise<unknown> =>
     Promise.resolve().then(parse);
 
-  // A parse that fails validation leaves a yargs instance in a state that breaks
-  // the next parse, so each failing case gets its own instance.
-  const freshCli = (
-    configReader: ConfigReader = instance(mock<ConfigReader>())
-  ) => {
+  // CliBuilder configures the process-wide yargs singleton, so a cli built here
+  // shares state with `cli`.
+  const cliWith = (configReader: ConfigReader) => {
     const runRepeater = new RunRepeater();
     runRepeater.handler = handler;
 
@@ -61,6 +59,27 @@ describe('RunRepeater', () => {
       info: new CliInfo(process.cwd()),
       configReader
     }).build({ commands: [runRepeater] });
+  };
+
+  // A parse that fails validation leaves the yargs singleton in a state that
+  // breaks the next parse, so failing cases run against isolated modules.
+  const isolatedCli = (): Argv => {
+    let isolated: Argv;
+
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { RunRepeater: IsolatedRunRepeater } = require('./RunRepeater');
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const config = require('../Config');
+      const runRepeater = new IsolatedRunRepeater();
+      runRepeater.handler = handler;
+      isolated = new config.CliBuilder({
+        info: new config.CliInfo(process.cwd()),
+        configReader: instance(mock<ConfigReader>())
+      }).build({ commands: [runRepeater] });
+    });
+
+    return isolated;
   };
 
   describe('builder', () => {
@@ -157,7 +176,7 @@ describe('RunRepeater', () => {
 
       // act
       const result = settle(() =>
-        parseRepeater(['--pkcs11-cert', entry], freshCli())
+        parseRepeater(['--pkcs11-cert', entry], isolatedCli())
       );
 
       // assert
@@ -173,53 +192,177 @@ describe('RunRepeater', () => {
 
       // act
       const result = settle(() =>
-        parseRepeater(['--pkcs11-provider', provider], freshCli())
+        parseRepeater(['--pkcs11-provider', provider], isolatedCli())
       );
 
       // assert
       await expect(result).rejects.toThrow(
-        `Option --pkcs11-provider has wrong value: ${provider} does not exist.`
+        `Option --pkcs11-provider ${provider} does not exist or is not a file.`
       );
       expect(handler).not.toHaveBeenCalled();
     });
 
-    it('should accept --cert and --pkcs11-cert entries given as objects by the config file', async () => {
+    it('should register an existing --pkcs11-provider with the certificates', async () => {
       // arrange
-      const config = {
-        cert: [{ hostname: 'c.example.com', path: join(dir, 'c.pfx') }],
-        pkcs11Cert: [{ hostname: 'd.example.com', module, pinFile }]
-      };
-      const configReader = {
-        discovery: () => undefined,
-        load() {
-          return this;
-        },
-        toJSON: () => config
-      } as unknown as ConfigReader;
-      const configuredCli = freshCli(configReader);
+      const provider = join(dir, 'pkcs11prov.so');
+      writeFileSync(provider, '');
 
       // act
-      await configuredCli.parse([
-        'repeater',
-        '--id',
-        repeaterId,
-        '--token',
-        'token',
-        '--config',
-        join(dir, '.brightrc.json')
+      await parseRepeater([
+        '--pkcs11-provider',
+        provider,
+        '--pkcs11-cert',
+        JSON.stringify({ hostname: 'a.example.com', module, pinFile })
       ]);
 
       // assert
-      const options = container.resolve<RequestExecutorOptions>(
-        RequestExecutorOptions
-      );
-      expect(handler).toHaveBeenCalled();
-      expect(options.certs).toEqual([
-        expect.objectContaining({ hostname: 'c.example.com' })
+      expect(
+        container.resolve<RequestExecutorOptions>(RequestExecutorOptions).pkcs11
+          ?.provider
+      ).toBe(provider);
+    });
+
+    it('should read the PIN variable named by "pinEnv" from the process environment', async () => {
+      // arrange
+      process.env.BRIGHT_SPEC_CARD_PIN = '1234';
+
+      // act
+      await settle(() =>
+        parseRepeater([
+          '--pkcs11-cert',
+          JSON.stringify({
+            hostname: 'a.example.com',
+            module,
+            pinEnv: 'BRIGHT_SPEC_CARD_PIN'
+          })
+        ])
+      ).finally(() => delete process.env.BRIGHT_SPEC_CARD_PIN);
+
+      // assert
+      expect(
+        container.resolve<RequestExecutorOptions>(RequestExecutorOptions).pkcs11
+          ?.certs
+      ).toEqual([expect.objectContaining({ pinEnv: 'BRIGHT_SPEC_CARD_PIN' })]);
+    });
+
+    it('should accept several entries from REPEATER_PKCS11_CERT as a JSON array', async () => {
+      // arrange
+      process.env.REPEATER_PKCS11_CERT = JSON.stringify([
+        { hostname: 'a.example.com', module, pinFile },
+        { hostname: 'b.example.com', module, pinFile }
       ]);
-      expect(options.pkcs11?.certs).toEqual([
-        expect.objectContaining({ hostname: 'd.example.com', module })
+
+      // act
+      await settle(() => parseRepeater([])).finally(
+        () => delete process.env.REPEATER_PKCS11_CERT
+      );
+
+      // assert
+      expect(
+        container
+          .resolve<RequestExecutorOptions>(RequestExecutorOptions)
+          .pkcs11?.certs.map(({ hostname }) => hostname)
+      ).toEqual(['a.example.com', 'b.example.com']);
+    });
+
+    it('should reject "pinEnv" when installing the daemon', async () => {
+      // arrange
+      process.env.BRIGHT_SPEC_CARD_PIN = '1234';
+      const entry = JSON.stringify({
+        hostname: 'a.example.com',
+        module,
+        pinEnv: 'BRIGHT_SPEC_CARD_PIN'
+      });
+
+      // act
+      const result = settle(() =>
+        parseRepeater(['--daemon', '--pkcs11-cert', entry], isolatedCli())
+      ).finally(() => delete process.env.BRIGHT_SPEC_CARD_PIN);
+
+      // assert
+      await expect(result).rejects.toThrow(
+        /"pinEnv" is not available to the daemon service/
+      );
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('should not validate --pkcs11-cert entries when removing the daemon', async () => {
+      // arrange
+      const entry = JSON.stringify({ hostname: 'a.example.com', pinFile });
+
+      // act
+      await parseRepeater(['--remove-daemon', '--pkcs11-cert', entry]);
+
+      // assert
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('should parse a --cert entry given as a JSON string on the command line', async () => {
+      // act
+      await parseRepeater([
+        '--cert',
+        JSON.stringify({
+          hostname: 'c.example.com',
+          path: './c.pfx',
+          passphrase: 'secret',
+          port: '8443'
+        })
+      ]);
+
+      // assert
+      expect(
+        container.resolve<RequestExecutorOptions>(RequestExecutorOptions).certs
+      ).toEqual([
+        {
+          hostname: 'c.example.com',
+          path: 'c.pfx',
+          passphrase: 'secret',
+          port: '8443'
+        }
       ]);
     });
+
+    it.each([
+      {
+        source: 'arrays',
+        config: {
+          cert: [{ hostname: 'c.example.com', path: 'c.pfx' }],
+          pkcs11Cert: [{ hostname: 'd.example.com', module, pinFile }]
+        }
+      },
+      {
+        source: 'single objects',
+        config: {
+          cert: { hostname: 'c.example.com', path: 'c.pfx' },
+          pkcs11Cert: { hostname: 'd.example.com', module, pinFile }
+        }
+      }
+    ])(
+      'should accept --cert and --pkcs11-cert given as $source by the config file',
+      async ({ config }) => {
+        // arrange
+        const reader = mock<ConfigReader>();
+        when(reader.load(anything())).thenCall(() => instance(reader));
+        when(reader.toJSON()).thenReturn(config as unknown as CliConfig);
+
+        // act
+        await parseRepeater(
+          ['--config', join(dir, '.brightrc.json')],
+          cliWith(instance(reader))
+        );
+
+        // assert
+        const options = container.resolve<RequestExecutorOptions>(
+          RequestExecutorOptions
+        );
+        expect(handler).toHaveBeenCalled();
+        expect(options.certs).toEqual([
+          expect.objectContaining({ hostname: 'c.example.com' })
+        ]);
+        expect(options.pkcs11?.certs).toEqual([
+          expect.objectContaining({ hostname: 'd.example.com', module })
+        ]);
+      }
+    );
   });
 });

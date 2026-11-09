@@ -8,38 +8,49 @@ import container from '../container';
 import { DefaultRepeaterServerOptions, RepeaterLauncher } from '../Repeater';
 import { Arguments, Argv, CommandModule } from 'yargs';
 import { captureException } from '@sentry/node';
-import { existsSync } from 'node:fs';
 import { normalize } from 'node:path';
 import process from 'node:process';
 
 export class RunRepeater implements CommandModule {
+  // Validation and registration see the same args object; parsing once keeps
+  // the file and env checks from running twice.
+  private static readonly pkcs11ByArgs = new WeakMap<
+    Arguments,
+    RequestExecutorOptions['pkcs11']
+  >();
+
   public readonly command = 'repeater [options]';
   public readonly describe = 'Starts an on-prem agent.';
 
   private static checkPkcs11(args: Arguments): void {
-    const provider = args.pkcs11Provider as string | undefined;
-
-    if (provider !== undefined && !existsSync(provider)) {
-      throw new Error(
-        `Option --pkcs11-provider has wrong value: ${provider} does not exist.`
-      );
+    // Removing the daemon must work even if the card setup has since changed.
+    if (args.remove) {
+      return;
     }
 
-    Pkcs11CertParser.parse(args.pkcs11Cert as unknown[], {
-      defaultModule: args.pkcs11Module as string
+    const provider = args.pkcs11Provider as string | undefined;
+    const defaultModule = args.pkcs11Module as string | undefined;
+    const resolvedProvider =
+      provider &&
+      Pkcs11CertParser.resolveFile(provider, 'Option --pkcs11-provider');
+
+    const certs = Pkcs11CertParser.parse(args.pkcs11Cert, {
+      defaultModule:
+        defaultModule &&
+        Pkcs11CertParser.resolveFile(defaultModule, 'Option --pkcs11-module'),
+      daemon: !!args.daemon
     });
+
+    RunRepeater.pkcs11ByArgs.set(
+      args,
+      certs.length ? { certs, provider: resolvedProvider } : undefined
+    );
   }
 
   private static pkcs11Options(
     args: Arguments
   ): RequestExecutorOptions['pkcs11'] {
-    const certs = Pkcs11CertParser.parse(args.pkcs11Cert as unknown[], {
-      defaultModule: args.pkcs11Module as string
-    });
-
-    return certs.length
-      ? { certs, provider: args.pkcs11Provider as string }
-      : undefined;
+    return RunRepeater.pkcs11ByArgs.get(args);
   }
 
   public builder(argv: Argv): Argv {
@@ -116,9 +127,9 @@ export class RunRepeater implements CommandModule {
         string: true,
         describe:
           'The certificate must be in PKCS, or PEM format. Example: {"hostname": "example.com", "path": "./example.pem", "passphrase": "pa$$word", "port": "1234"}.',
-        coerce(args: (string | Cert)[]): Cert[] {
-          // The config file supplies objects, the CLI and env supply JSON strings.
-          return args
+        coerce(args: (string | Cert)[] | Cert): Cert[] {
+          // The config file supplies objects (or a single object), the CLI and env JSON strings.
+          return (Array.isArray(args) ? args : [args])
             .map((arg: string | Cert) =>
               typeof arg === 'string' ? JSON.parse(arg) : arg
             )

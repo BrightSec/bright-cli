@@ -1,10 +1,12 @@
 import { Pkcs11Cert } from './Pkcs11Cert';
-import { accessSync, constants, statSync } from 'node:fs';
-import { normalize } from 'node:path';
+import { accessSync, constants, Stats, statSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 export interface Pkcs11CertParserOptions {
   defaultModule?: string;
   env?: NodeJS.ProcessEnv;
+  /** The entries are about to be written into a daemon service definition. */
+  daemon?: boolean;
 }
 
 type RawEntry = Record<string, unknown>;
@@ -23,43 +25,96 @@ export class Pkcs11CertParser {
     'maxConcurrency'
   ]);
   private static readonly HEX_ID = /^(?:[0-9a-f]{2})+$/i;
+  private static readonly ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  // `.env('REPEATER')` turns every REPEATER_* variable into a repeater option.
+  private static readonly RESERVED_ENV_PREFIX = /^REPEATER_/i;
 
   /**
-   * Turns raw `--pkcs11-cert` entries (JSON strings from the CLI/env or objects
-   * from the config file) into validated descriptors.
+   * Turns raw `--pkcs11-cert` values into validated descriptors. A value is a
+   * JSON string (CLI), a JSON string holding one object or an array of them
+   * (env), or an object / array of objects (config file).
    *
    * @throws Error naming the offending entry; nothing is partially applied.
    */
   public static parse(
-    entries: unknown[] | undefined,
-    { defaultModule, env = process.env }: Pkcs11CertParserOptions = {}
+    entries: unknown,
+    {
+      defaultModule,
+      env = process.env,
+      daemon = false
+    }: Pkcs11CertParserOptions = {}
   ): Pkcs11Cert[] {
-    return (entries ?? []).map((entry: unknown, index: number) => {
-      const raw = Pkcs11CertParser.toObject(entry, index);
-
-      try {
-        return Pkcs11CertParser.toDescriptor(raw, defaultModule, env);
-      } catch (e) {
-        throw new Error(
-          `Option --pkcs11-cert #${index + 1}${Pkcs11CertParser.describeHost(
-            raw
-          )}: ${e.message}`
-        );
+    return Pkcs11CertParser.expand(entries).map(
+      (raw: RawEntry, index: number) => {
+        try {
+          return Pkcs11CertParser.toDescriptor(raw, defaultModule, env, daemon);
+        } catch (e) {
+          throw new Error(
+            `Option --pkcs11-cert #${index + 1}${Pkcs11CertParser.describeHost(
+              raw
+            )}: ${e.message}`
+          );
+        }
       }
-    });
+    );
   }
 
-  private static toObject(entry: unknown, index: number): RawEntry {
-    let value = entry;
+  /**
+   * @returns the absolute path of an existing regular file.
+   * @throws Error mentioning `subject` when the file does not exist.
+   */
+  public static resolveFile(path: string, subject: string): string {
+    const absolute = resolve(path);
+    let stats: Stats | undefined;
 
-    if (typeof entry === 'string') {
-      try {
-        value = JSON.parse(entry);
-      } catch {
-        throw new Error(`Option --pkcs11-cert #${index + 1}: invalid JSON.`);
-      }
+    try {
+      stats = statSync(absolute);
+    } catch {
+      stats = undefined;
     }
 
+    if (!stats?.isFile()) {
+      throw new Error(
+        `${subject} ${absolute} does not exist or is not a file.`
+      );
+    }
+
+    return absolute;
+  }
+
+  private static expand(entries: unknown): RawEntry[] {
+    if (entries === undefined || entries === null) {
+      return [];
+    }
+
+    const values = Array.isArray(entries) ? entries : [entries];
+
+    return values
+      .flatMap((value: unknown, position: number) => {
+        const parsed = Pkcs11CertParser.parseJson(value, position);
+
+        return Array.isArray(parsed) ? parsed : [parsed];
+      })
+      .map((value: unknown, index: number) =>
+        Pkcs11CertParser.toObject(value, index)
+      );
+  }
+
+  private static parseJson(value: unknown, position: number): unknown {
+    if (typeof value !== 'string') {
+      return value;
+    }
+
+    try {
+      return JSON.parse(value);
+    } catch {
+      throw new Error(
+        `Option --pkcs11-cert value #${position + 1}: invalid JSON.`
+      );
+    }
+  }
+
+  private static toObject(value: unknown, index: number): RawEntry {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new Error(
         `Option --pkcs11-cert #${index + 1}: expected a JSON object.`
@@ -78,7 +133,8 @@ export class Pkcs11CertParser {
   private static toDescriptor(
     raw: RawEntry,
     defaultModule: string | undefined,
-    env: NodeJS.ProcessEnv
+    env: NodeJS.ProcessEnv,
+    daemon: boolean
   ): Pkcs11Cert {
     Pkcs11CertParser.assertKnownFields(raw);
 
@@ -93,7 +149,7 @@ export class Pkcs11CertParser {
       hostname,
       port: Pkcs11CertParser.port(raw),
       module: Pkcs11CertParser.module(raw, defaultModule),
-      ...Pkcs11CertParser.pinSource(raw, env),
+      ...Pkcs11CertParser.pinSource(raw, env, daemon),
       token: Pkcs11CertParser.optionalString(raw, 'token'),
       object: Pkcs11CertParser.optionalString(raw, 'object'),
       id: Pkcs11CertParser.id(raw),
@@ -169,12 +225,13 @@ export class Pkcs11CertParser {
       );
     }
 
-    return Pkcs11CertParser.existingFile(module, 'module');
+    return Pkcs11CertParser.resolveFile(module, '"module"');
   }
 
   private static pinSource(
     raw: RawEntry,
-    env: NodeJS.ProcessEnv
+    env: NodeJS.ProcessEnv,
+    daemon: boolean
   ): Pick<Pkcs11Cert, 'pinFile' | 'pinEnv'> {
     const pinFile = Pkcs11CertParser.optionalString(raw, 'pinFile');
     const pinEnv = Pkcs11CertParser.optionalString(raw, 'pinEnv');
@@ -183,25 +240,54 @@ export class Pkcs11CertParser {
       throw new Error('specify exactly one of "pinFile" or "pinEnv".');
     }
 
-    if (pinEnv) {
-      if (!env[pinEnv]) {
-        throw new Error(
-          `environment variable "${pinEnv}" referenced by "pinEnv" is not set.`
-        );
-      }
+    return pinEnv
+      ? { pinEnv: Pkcs11CertParser.pinEnv(pinEnv, env, daemon) }
+      : { pinFile: Pkcs11CertParser.pinFile(pinFile) };
+  }
 
-      return { pinEnv };
+  private static pinEnv(
+    name: string,
+    env: NodeJS.ProcessEnv,
+    daemon: boolean
+  ): string {
+    // The value is never echoed: a PIN typed here by mistake must not reach logs.
+    if (!Pkcs11CertParser.ENV_NAME.test(name)) {
+      throw new Error(
+        '"pinEnv" must be the name of an environment variable (letters, digits and "_"), not the PIN itself.'
+      );
     }
 
-    const path = Pkcs11CertParser.existingFile(pinFile, 'pinFile');
+    if (Pkcs11CertParser.RESERVED_ENV_PREFIX.test(name)) {
+      throw new Error(
+        `"pinEnv" variable ${name} starts with "REPEATER_", which bright-cli reads as its own options. Choose another name.`
+      );
+    }
+
+    if (daemon) {
+      throw new Error(
+        '"pinEnv" is not available to the daemon service, which does not inherit this shell\'s environment. Use "pinFile".'
+      );
+    }
+
+    if (!env[name]) {
+      throw new Error(
+        `environment variable ${name} referenced by "pinEnv" is not set.`
+      );
+    }
+
+    return name;
+  }
+
+  private static pinFile(path: string): string {
+    const absolute = Pkcs11CertParser.resolveFile(path, '"pinFile"');
 
     try {
-      accessSync(path, constants.R_OK);
+      accessSync(absolute, constants.R_OK);
     } catch {
-      throw new Error(`"pinFile" ${path} is not readable.`);
+      throw new Error(`"pinFile" ${absolute} is not readable.`);
     }
 
-    return { pinFile: path };
+    return absolute;
   }
 
   private static id(raw: RawEntry): string | undefined {
@@ -219,7 +305,7 @@ export class Pkcs11CertParser {
 
     return cert === 'token'
       ? cert
-      : Pkcs11CertParser.existingFile(cert, 'cert');
+      : Pkcs11CertParser.resolveFile(cert, '"cert"');
   }
 
   private static maxConcurrency(raw: RawEntry): number {
@@ -230,22 +316,5 @@ export class Pkcs11CertParser {
     }
 
     return value;
-  }
-
-  private static existingFile(path: string, field: string): string {
-    const normalized = normalize(path);
-
-    let isFile = false;
-    try {
-      isFile = statSync(normalized).isFile();
-    } catch {
-      // reported below
-    }
-
-    if (!isFile) {
-      throw new Error(`"${field}" file ${normalized} does not exist.`);
-    }
-
-    return normalized;
   }
 }

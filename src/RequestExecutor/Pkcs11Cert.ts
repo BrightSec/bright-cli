@@ -1,6 +1,6 @@
 /**
  * A client certificate whose private key lives on a PKCS#11 token (smart card,
- * USB token, HSM). Applies to HTTP targets only.
+ * USB token, HSM). Applies to HTTPS targets only; WebSocket targets are not covered.
  */
 export interface Pkcs11Cert {
   hostname: string;
@@ -12,12 +12,12 @@ export interface Pkcs11Cert {
   pinEnv?: string;
   /** Token label; when absent the only token present is used. */
   token?: string;
-  /** Key/cert label; when absent with `id`, the key is selected at startup. */
+  /** Key/cert label. When neither `object` nor `id` is set, the key is selected at startup. */
   object?: string;
   /** Hex-encoded CKA_ID. */
   id?: string;
-  /** `token` reads the certificate from the token; otherwise a PEM file path. */
-  cert: 'token' | string;
+  /** `"token"` reads the certificate from the token; any other value is a PEM file path. */
+  cert: string;
   /** Concurrent connections allowed to sign with this key. */
   maxConcurrency: number;
 }

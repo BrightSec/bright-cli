@@ -60,6 +60,23 @@ describe('Pkcs11Client', () => {
       // assert
       expect(env.PATH).toBe(`C:/Bright${delimiter}C:/Windows`);
     });
+
+    it('should make OpenSSL read the live environment on Windows', () => {
+      // arrange
+      const env: NodeJS.ProcessEnv = {};
+
+      // act
+      new Pkcs11Client(
+        { module: '/opt/vendor.so', certs: [cert()] },
+        dependencies({ env, platform: 'win32' })
+      );
+
+      // assert
+      expect(env).toMatchObject({
+        OPENSSL_CONF: '/tmp/x/openssl.cnf',
+        OPENSSL_WIN32_UTF8: '1'
+      });
+    });
   });
 
   describe('match', () => {

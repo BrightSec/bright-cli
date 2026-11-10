@@ -24,7 +24,17 @@ const run = async (job: RepeaterJob): Promise<RepeaterResult> => {
       JSON.stringify(job)
     ],
     {
-      env: { ...process.env, CARD_PIN: env.pin, WRONG_PIN: '0000' },
+      env: {
+        ...process.env,
+        // The Repeater must work from its own generated OpenSSL config alone;
+        // these let OpenSSL and libp11 find everything without it.
+        OPENSSL_CONF: undefined,
+        OPENSSL_MODULES: undefined,
+        PKCS11_MODULE_PATH: undefined,
+        PKCS11_PROVIDER_MODULE: undefined,
+        CARD_PIN: env.pin,
+        WRONG_PIN: '0000'
+      },
       maxBuffer: 16 * 1024 * 1024
     }
   );

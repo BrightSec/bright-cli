@@ -111,10 +111,14 @@ jobs:
 
       - name: Install dev-deps
         if: startsWith(matrix.os, 'ubuntu')
+        # pkcs11js compiles at install time: node-gyp needs Python 3.8+ and
+        # Node 24's headers need C++20, newer than ubi8's python3 (3.6) and gcc (8).
         run: |
           dnf install -y dnf-utils \
-          && dnf install -y python3 gcc gcc-c++ make \
-          && rm -rf /var/cache/dnf
+          && dnf install -y python3.11 gcc-toolset-12-gcc-c++ make \
+          && rm -rf /var/cache/dnf \
+          && echo /opt/rh/gcc-toolset-12/root/usr/bin >> "$GITHUB_PATH" \
+          && echo "npm_config_python=python3.11" >> "$GITHUB_ENV"
 
       - name: Install deps
         uses: ./.github/workflows/composite/npm

@@ -2181,7 +2181,6 @@ describe('HttpRequestExecutor', () => {
 
     const pkcs11Cert: Pkcs11Cert = {
       hostname: '127.0.0.1',
-      module: '/opt/vendor.so',
       pinEnv: 'CARD_PIN',
       cert: 'token',
       maxConcurrency: 1
@@ -2215,7 +2214,7 @@ describe('HttpRequestExecutor', () => {
       const client = mockPkcs11Client();
 
       // act
-      buildSut({ pkcs11: { certs: [pkcs11Cert] } });
+      buildSut({ pkcs11: { module: '/opt/vendor.so', certs: [pkcs11Cert] } });
 
       // assert
       expect(client.warmUp).toHaveBeenCalledTimes(1);
@@ -2230,7 +2229,9 @@ describe('HttpRequestExecutor', () => {
         new Pkcs11Error(Pkcs11ErrorCode.PIN_INCORRECT, 'PIN rejected')
       );
       const { request } = createRequest({ url: `${baseUrl}/` });
-      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] } });
+      const sut = buildSut({
+        pkcs11: { module: '/opt/vendor.so', certs: [pkcs11Cert] }
+      });
 
       // act
       const response = await sut.execute(request);
@@ -2257,7 +2258,9 @@ describe('HttpRequestExecutor', () => {
           new Pkcs11Error(Pkcs11ErrorCode.KEY_NOT_FOUND, 'no key', true)
         );
       const { request } = createRequest({ url: 'https://127.0.0.1:1/' });
-      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert, second] } });
+      const sut = buildSut({
+        pkcs11: { module: '/opt/vendor.so', certs: [pkcs11Cert, second] }
+      });
 
       // act
       const response = await sut.execute(request);
@@ -2279,7 +2282,9 @@ describe('HttpRequestExecutor', () => {
       const create = jest.fn(() => new Curl());
       const pool = new CurlHandlePool(1, create);
       client.pool.mockReturnValue(pool);
-      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] } });
+      const sut = buildSut({
+        pkcs11: { module: '/opt/vendor.so', certs: [pkcs11Cert] }
+      });
 
       // act
       const responses = [];
@@ -2312,7 +2317,9 @@ describe('HttpRequestExecutor', () => {
         res.end('ok');
       });
       const { request } = createRequest({ url: `${baseUrl}/` });
-      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] } });
+      const sut = buildSut({
+        pkcs11: { module: '/opt/vendor.so', certs: [pkcs11Cert] }
+      });
 
       // act
       const response = await sut.execute(request);
@@ -2330,7 +2337,10 @@ describe('HttpRequestExecutor', () => {
       const pool = new CurlHandlePool(1);
       const acquire = jest.spyOn(pool, 'acquire');
       client.pool.mockReturnValue(pool);
-      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] }, timeout: 0 });
+      const sut = buildSut({
+        pkcs11: { module: '/opt/vendor.so', certs: [pkcs11Cert] },
+        timeout: 0
+      });
 
       // act
       const response = await sut.execute(
@@ -2352,7 +2362,10 @@ describe('HttpRequestExecutor', () => {
       const client = mockPkcs11Client();
       const pool = new CurlHandlePool(0);
       client.pool.mockReturnValue(pool);
-      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] }, timeout: 50 });
+      const sut = buildSut({
+        pkcs11: { module: '/opt/vendor.so', certs: [pkcs11Cert] },
+        timeout: 50
+      });
 
       // act
       const response = await sut.execute(
@@ -2377,7 +2390,9 @@ describe('HttpRequestExecutor', () => {
       });
       const pool = new CurlHandlePool(1);
       client.pool.mockReturnValue(pool);
-      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] } });
+      const sut = buildSut({
+        pkcs11: { module: '/opt/vendor.so', certs: [pkcs11Cert] }
+      });
 
       // act
       const response = await sut.execute(

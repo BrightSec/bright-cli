@@ -39,18 +39,8 @@ export class Pkcs11Client {
     }: Pkcs11ClientDependencies = {}
   ) {
     try {
-      const modules = new Set(options.certs.map(({ module }) => module));
-
-      if (modules.size !== 1) {
-        throw new Error(
-          `All PKCS#11 certificates must use the same vendor module; found ${[
-            ...modules
-          ].join(', ')}.`
-        );
-      }
-
       const provider = locateProvider(options.provider);
-      const config = writeConfig(provider, [...modules][0]);
+      const config = writeConfig(provider, options.module);
 
       if (env.OPENSSL_CONF && env.OPENSSL_CONF !== config.path) {
         logger.warn(
@@ -70,7 +60,12 @@ export class Pkcs11Client {
       }
 
       logger.debug('PKCS#11: using OpenSSL provider %s', provider);
-      this.preflight = new Pkcs11Preflight(loader, config.name, { env });
+      this.preflight = new Pkcs11Preflight(
+        loader,
+        options.module,
+        config.name,
+        { env }
+      );
     } catch (e) {
       this.setupError =
         e instanceof Pkcs11Error

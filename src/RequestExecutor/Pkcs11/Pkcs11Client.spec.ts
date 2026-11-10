@@ -7,7 +7,6 @@ import { delimiter } from 'node:path';
 describe('Pkcs11Client', () => {
   const cert = (overrides: Partial<Pkcs11Cert> = {}): Pkcs11Cert => ({
     hostname: 'example.com',
-    module: '/opt/vendor.so',
     pinEnv: 'CARD_PIN',
     cert: 'token',
     maxConcurrency: 1,
@@ -35,7 +34,10 @@ describe('Pkcs11Client', () => {
       const env: NodeJS.ProcessEnv = { OPENSSL_CONF: '/etc/ssl/openssl.cnf' };
 
       // act
-      new Pkcs11Client({ certs: [cert()] }, dependencies({ env }));
+      new Pkcs11Client(
+        { module: '/opt/vendor.so', certs: [cert()] },
+        dependencies({ env })
+      );
 
       // assert
       expect(env.OPENSSL_CONF).toBe('/tmp/x/openssl.cnf');
@@ -47,7 +49,7 @@ describe('Pkcs11Client', () => {
 
       // act
       new Pkcs11Client(
-        { certs: [cert()] },
+        { module: '/opt/vendor.so', certs: [cert()] },
         dependencies({
           env,
           platform: 'win32',
@@ -65,7 +67,10 @@ describe('Pkcs11Client', () => {
       cert({ hostname: 'example.com' }),
       cert({ hostname: '*.example.org', port: '8443' })
     ];
-    const client = new Pkcs11Client({ certs }, dependencies());
+    const client = new Pkcs11Client(
+      { module: '/opt/vendor.so', certs },
+      dependencies()
+    );
 
     it.each([
       { url: 'https://example.com/a', expected: [certs[0]] },
@@ -86,27 +91,10 @@ describe('Pkcs11Client', () => {
   });
 
   describe('identity', () => {
-    it('should reject certificates that use different vendor modules', async () => {
-      // arrange
-      const client = new Pkcs11Client(
-        { certs: [cert(), cert({ module: '/opt/other.so' })] },
-        dependencies()
-      );
-
-      // act
-      const result = client.identity(cert());
-
-      // assert
-      await expect(result).rejects.toMatchObject({
-        code: Pkcs11ErrorCode.MODULE_LOAD_FAILED,
-        message: expect.stringContaining('the same vendor module')
-      });
-    });
-
     it('should reject every request when the setup failed', async () => {
       // arrange
       const client = new Pkcs11Client(
-        { certs: [cert()] },
+        { module: '/opt/vendor.so', certs: [cert()] },
         dependencies({
           locateProvider: () => {
             throw new Pkcs11Error(
@@ -133,7 +121,10 @@ describe('Pkcs11Client', () => {
       // arrange
       const deps = dependencies();
       const certs = [cert(), cert({ hostname: 'other.com' })];
-      const client = new Pkcs11Client({ certs }, deps);
+      const client = new Pkcs11Client(
+        { module: '/opt/vendor.so', certs },
+        deps
+      );
 
       // act
       client.warmUp();
@@ -147,7 +138,10 @@ describe('Pkcs11Client', () => {
   describe('pool', () => {
     it('should keep one pool per certificate', () => {
       // arrange
-      const client = new Pkcs11Client({ certs: [cert()] }, dependencies());
+      const client = new Pkcs11Client(
+        { module: '/opt/vendor.so', certs: [cert()] },
+        dependencies()
+      );
       const first = cert();
       const second = cert({ maxConcurrency: 2 });
 

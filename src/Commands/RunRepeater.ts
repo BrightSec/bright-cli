@@ -36,7 +36,7 @@ export class RunRepeater implements CommandModule {
   ): RequestExecutorOptions['pkcs11'] {
     const daemon = !!args.daemon;
     const provider = args.pkcs11Provider as string | undefined;
-    const defaultModule = args.pkcs11Module as string | undefined;
+    const module = args.pkcs11Module as string | undefined;
 
     // The service definition keeps only argv, so env-supplied entries would be lost.
     if (daemon && process.env.REPEATER_PKCS11_CERT) {
@@ -45,6 +45,10 @@ export class RunRepeater implements CommandModule {
       );
     }
 
+    const certs = Pkcs11CertParser.parse(args.pkcs11Cert, { daemon });
+    const resolvedModule =
+      module &&
+      Pkcs11CertParser.resolveFile(module, 'Option --pkcs11-module', daemon);
     const resolvedProvider =
       provider &&
       Pkcs11CertParser.resolveFile(
@@ -53,18 +57,17 @@ export class RunRepeater implements CommandModule {
         daemon
       );
 
-    const certs = Pkcs11CertParser.parse(args.pkcs11Cert, {
-      defaultModule:
-        defaultModule &&
-        Pkcs11CertParser.resolveFile(
-          defaultModule,
-          'Option --pkcs11-module',
-          daemon
-        ),
-      daemon
-    });
+    if (!certs.length) {
+      return undefined;
+    }
 
-    return certs.length ? { certs, provider: resolvedProvider } : undefined;
+    if (!resolvedModule) {
+      throw new Error(
+        'Option --pkcs11-module is required with --pkcs11-cert: set it to the PKCS#11 library of the card vendor.'
+      );
+    }
+
+    return { module: resolvedModule, provider: resolvedProvider, certs };
   }
 
   private static pkcs11Options(
@@ -187,16 +190,16 @@ export class RunRepeater implements CommandModule {
         requiresArg: true,
         array: true,
         describe:
-          'Client certificate whose private key is on a PKCS#11 token (smart card, USB token, HSM), for HTTPS targets. ' +
-          'Required: "hostname", "pinFile" or "pinEnv", and "module" unless --pkcs11-module is set. ' +
+          'Client certificate whose private key is on a PKCS#11 token (smart card, USB token, HSM), for HTTPS targets. Requires --pkcs11-module. ' +
+          'Required: "hostname", "pinFile" or "pinEnv". ' +
           'Optional: "port", "token", "object", "id", "cert" ("token" or a PEM file path), "maxConcurrency" (default 1). ' +
-          'Example: {"hostname": "example.com", "module": "/usr/lib/opensc-pkcs11.so", "pinFile": "/run/secrets/card.pin"}'
+          'Example: {"hostname": "example.com", "pinFile": "/run/secrets/card.pin"}'
       })
       .option('pkcs11-module', {
         requiresArg: true,
         string: true,
         describe:
-          'Default PKCS#11 library of the card vendor for --pkcs11-cert entries without "module". Example: "C:\\Program Files\\Yubico\\Yubico PIV Tool\\bin\\libykcs11.dll"'
+          'PKCS#11 library of the card vendor, used for all --pkcs11-cert entries. Example: "C:\\Program Files\\Yubico\\Yubico PIV Tool\\bin\\libykcs11.dll"'
       })
       .option('pkcs11-provider', {
         requiresArg: true,

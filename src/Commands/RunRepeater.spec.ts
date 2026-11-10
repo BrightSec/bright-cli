@@ -8,7 +8,7 @@ import { anything, instance, mock, when } from 'ts-mockito';
 import { Arguments, Argv } from 'yargs';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 jest.mock('../Config/SystemConfigManager', () => ({
   SystemConfigManager: jest.fn().mockImplementation(() => ({
@@ -127,7 +127,7 @@ describe('RunRepeater', () => {
       }
     );
 
-    it('should register the parsed --pkcs11-cert entries with the default --pkcs11-module', async () => {
+    it('should register the parsed --pkcs11-cert entries with the --pkcs11-module', async () => {
       // act
       await parseRepeater([
         '--pkcs11-module',
@@ -143,16 +143,70 @@ describe('RunRepeater', () => {
       expect(
         container.resolve<RequestExecutorOptions>(RequestExecutorOptions).pkcs11
       ).toEqual({
+        module,
         provider: undefined,
         certs: [
-          expect.objectContaining({ hostname: 'a.example.com', module }),
-          expect.objectContaining({
-            hostname: 'b.example.com',
-            module,
-            port: '8443'
-          })
+          expect.objectContaining({ hostname: 'a.example.com' }),
+          expect.objectContaining({ hostname: 'b.example.com', port: '8443' })
         ]
       });
+    });
+
+    it('should not start the repeater when --pkcs11-cert is given without --pkcs11-module', async () => {
+      // act
+      const result = settle(() =>
+        parseRepeater(
+          [
+            '--pkcs11-cert',
+            JSON.stringify({ hostname: 'a.example.com', pinFile })
+          ],
+          isolatedCli()
+        )
+      );
+
+      // assert
+      await expect(result).rejects.toThrow(
+        'Option --pkcs11-module is required with --pkcs11-cert'
+      );
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('should not start the repeater when --pkcs11-module does not exist', async () => {
+      // arrange
+      const missing = join(dir, 'missing-pkcs11.so');
+
+      // act
+      const result = settle(() =>
+        parseRepeater(['--pkcs11-module', missing], isolatedCli())
+      );
+
+      // assert
+      await expect(result).rejects.toThrow(
+        `Option --pkcs11-module ${missing} does not exist or is not a file.`
+      );
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('should reject a relative --pkcs11-module when installing the daemon', async () => {
+      // act
+      const result = settle(() =>
+        parseRepeater(
+          [
+            '--daemon',
+            '--pkcs11-module',
+            relative(process.cwd(), module),
+            '--pkcs11-cert',
+            JSON.stringify({ hostname: 'a.example.com', pinFile })
+          ],
+          isolatedCli()
+        )
+      );
+
+      // assert
+      await expect(result).rejects.toThrow(
+        /Option --pkcs11-module .* must be an absolute path when installing the daemon/
+      );
+      expect(handler).not.toHaveBeenCalled();
     });
 
     it('should leave PKCS#11 disabled when no --pkcs11-cert is given', async () => {
@@ -211,8 +265,10 @@ describe('RunRepeater', () => {
       await parseRepeater([
         '--pkcs11-provider',
         provider,
+        '--pkcs11-module',
+        module,
         '--pkcs11-cert',
-        JSON.stringify({ hostname: 'a.example.com', module, pinFile })
+        JSON.stringify({ hostname: 'a.example.com', pinFile })
       ]);
 
       // assert
@@ -229,10 +285,11 @@ describe('RunRepeater', () => {
       // act
       await settle(() =>
         parseRepeater([
+          '--pkcs11-module',
+          module,
           '--pkcs11-cert',
           JSON.stringify({
             hostname: 'a.example.com',
-            module,
             pinEnv: 'BRIGHT_SPEC_CARD_PIN'
           })
         ])
@@ -248,12 +305,12 @@ describe('RunRepeater', () => {
     it('should accept several entries from REPEATER_PKCS11_CERT as a JSON array', async () => {
       // arrange
       process.env.REPEATER_PKCS11_CERT = JSON.stringify([
-        { hostname: 'a.example.com', module, pinFile },
-        { hostname: 'b.example.com', module, pinFile }
+        { hostname: 'a.example.com', pinFile },
+        { hostname: 'b.example.com', pinFile }
       ]);
 
       // act
-      await settle(() => parseRepeater([])).finally(
+      await settle(() => parseRepeater(['--pkcs11-module', module])).finally(
         () => delete process.env.REPEATER_PKCS11_CERT
       );
 
@@ -270,13 +327,15 @@ describe('RunRepeater', () => {
       process.env.BRIGHT_SPEC_CARD_PIN = '1234';
       const entry = JSON.stringify({
         hostname: 'a.example.com',
-        module,
         pinEnv: 'BRIGHT_SPEC_CARD_PIN'
       });
 
       // act
       const result = settle(() =>
-        parseRepeater(['--daemon', '--pkcs11-cert', entry], isolatedCli())
+        parseRepeater(
+          ['--daemon', '--pkcs11-module', module, '--pkcs11-cert', entry],
+          isolatedCli()
+        )
       ).finally(() => delete process.env.BRIGHT_SPEC_CARD_PIN);
 
       // assert
@@ -290,7 +349,6 @@ describe('RunRepeater', () => {
       // arrange
       process.env.REPEATER_PKCS11_CERT = JSON.stringify({
         hostname: 'a.example.com',
-        module,
         pinFile
       });
 
@@ -347,14 +405,16 @@ describe('RunRepeater', () => {
         source: 'arrays',
         config: {
           cert: [{ hostname: 'c.example.com', path: 'c.pfx' }],
-          pkcs11Cert: [{ hostname: 'd.example.com', module, pinFile }]
+          pkcs11Module: module,
+          pkcs11Cert: [{ hostname: 'd.example.com', pinFile }]
         }
       },
       {
         source: 'single objects',
         config: {
           cert: { hostname: 'c.example.com', path: 'c.pfx' },
-          pkcs11Cert: { hostname: 'd.example.com', module, pinFile }
+          pkcs11Module: module,
+          pkcs11Cert: { hostname: 'd.example.com', pinFile }
         }
       }
     ])(
@@ -379,8 +439,9 @@ describe('RunRepeater', () => {
         expect(options.certs).toEqual([
           expect.objectContaining({ hostname: 'c.example.com' })
         ]);
+        expect(options.pkcs11?.module).toBe(module);
         expect(options.pkcs11?.certs).toEqual([
-          expect.objectContaining({ hostname: 'd.example.com', module })
+          expect.objectContaining({ hostname: 'd.example.com' })
         ]);
       }
     );

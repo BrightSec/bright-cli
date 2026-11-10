@@ -5,8 +5,6 @@
 export interface Pkcs11Cert {
   hostname: string;
   port?: string;
-  /** Vendor PKCS#11 library (.dll / .so / .dylib). */
-  module: string;
   pinFile?: string;
   /** Name of the environment variable holding the PIN, never the PIN itself. */
   pinEnv?: string;
@@ -23,6 +21,11 @@ export interface Pkcs11Cert {
 }
 
 export interface Pkcs11Options {
+  /**
+   * Vendor PKCS#11 library (.dll / .so / .dylib) shared by all certificates:
+   * the OpenSSL providers drive a single module per process.
+   */
+  module: string;
   certs: Pkcs11Cert[];
   /** Override for the OpenSSL PKCS#11 provider plugin location. */
   provider?: string;

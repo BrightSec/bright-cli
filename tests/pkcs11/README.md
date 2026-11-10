@@ -4,14 +4,14 @@ A software token ([SoftHSM2](https://github.com/softhsm/SoftHSMv2)) and an mTLS 
 
 `setup.sh` creates a throwaway token `bright-test` (user PIN `1234`) holding an RSA-2048 client key and its certificate, both labelled `client`. The private key exists only on the token. The target only accepts clients presenting a certificate issued by the test CA.
 
-`tls-stack.spec.ts` checks that the `@brightsec/node-libcurl` binding can complete that handshake with the key on the token. It runs in CI on changes to this folder or to `package-lock.json`.
+`tls-stack.spec.ts` checks that the `@brightsec/node-libcurl` binding can complete that handshake with the key on the token. `repeater.spec.ts` sends requests through the Repeater's `HttpRequestExecutor` with `--pkcs11-cert` options: login count, connection pooling, and the error codes for a wrong PIN or a missing token. Both run in CI on changes to this folder, to `src/RequestExecutor` or to `package-lock.json`.
 
 ## Run on Linux (Docker)
 
 ```bash
 docker build -t bright-cli-pkcs11 tests/pkcs11
 docker run --rm -v "$PWD":/app -v bright-cli-pkcs11-node-modules:/app/node_modules bright-cli-pkcs11 \
-  bash -c 'npm ci -q --ignore-scripts && npm rebuild @brightsec/node-libcurl \
+  bash -c 'npm ci -q --ignore-scripts && npm rebuild @brightsec/node-libcurl pkcs11js \
     && tests/pkcs11/setup.sh && . tests/pkcs11/.work/pkcs11.env && npm run test:pkcs11'
 ```
 

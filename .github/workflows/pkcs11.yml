@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'tests/pkcs11/**'
+      - 'src/RequestExecutor/**'
       - 'package-lock.json'
       - '.github/workflows/pkcs11.yml'
   workflow_dispatch:

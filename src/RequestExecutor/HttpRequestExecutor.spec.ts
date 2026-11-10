@@ -6,6 +6,11 @@ import { Request, RequestOptions, Cert } from './Request';
 import { RequestExecutorOptions } from './RequestExecutorOptions';
 import { CertificatesCache } from './CertificatesCache';
 import { CertificatesResolver } from './CertificatesResolver';
+import { Pkcs11Cert } from './Pkcs11Cert';
+import { CurlHandlePool } from './Pkcs11/CurlHandlePool';
+import { Pkcs11Client } from './Pkcs11/Pkcs11Client';
+import { Pkcs11Error, Pkcs11ErrorCode } from './Pkcs11/Pkcs11Error';
+import { Pkcs11Identity } from './Pkcs11/Pkcs11Preflight';
 import {
   anyString,
   anything,
@@ -28,6 +33,10 @@ import {
   deflate,
   deflateRaw
 } from 'node:zlib';
+
+// The real client writes an OpenSSL config and points OPENSSL_CONF at it, which
+// would leak into every other test in this worker.
+jest.mock('./Pkcs11/Pkcs11Client');
 
 // A short latency budget guard for the repeater's outbound request path.
 //
@@ -2169,5 +2178,144 @@ describe('HttpRequestExecutor', () => {
         withinBudget: mean < MAX_MEAN_LATENCY_MS
       }).toEqual(expect.objectContaining({ withinBudget: true }));
     }, 60000);
+
+    const pkcs11Cert: Pkcs11Cert = {
+      hostname: '127.0.0.1',
+      module: '/opt/vendor.so',
+      pinEnv: 'CARD_PIN',
+      cert: 'token',
+      maxConcurrency: 1
+    };
+
+    const mockPkcs11Client = () => {
+      const client = {
+        warmUp: jest.fn(),
+        match: jest.fn(() => [pkcs11Cert]),
+        identity: jest.fn(() =>
+          Promise.resolve<Pkcs11Identity>({
+            // OpenSSL's built-in provider: setting SSLENGINE succeeds, and plain
+            // HTTP never reaches the handshake that would use the key URI.
+            provider: 'default',
+            keyUri: 'pkcs11:token=card;id=%01;type=private?pin-value=1234',
+            certUri: 'pkcs11:token=card;id=%01;type=cert',
+            tls12Only: true
+          })
+        ),
+        pool: jest.fn()
+      };
+      jest
+        .mocked(Pkcs11Client)
+        .mockImplementation(() => client as unknown as Pkcs11Client);
+
+      return client;
+    };
+
+    it('should start the PKCS#11 checks when the executor is created', () => {
+      // arrange
+      const client = mockPkcs11Client();
+
+      // act
+      buildSut({ pkcs11: { certs: [pkcs11Cert] } });
+
+      // assert
+      expect(client.warmUp).toHaveBeenCalledTimes(1);
+    });
+
+    it('should return the PKCS#11 error code without sending the request', async () => {
+      // arrange
+      const client = mockPkcs11Client();
+      const handler = jest.fn((_req, res) => res.end('ok'));
+      const { baseUrl } = await startServer(handler);
+      client.identity.mockRejectedValue(
+        new Pkcs11Error(Pkcs11ErrorCode.PIN_INCORRECT, 'PIN rejected')
+      );
+      const { request } = createRequest({ url: `${baseUrl}/` });
+      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] } });
+
+      // act
+      const response = await sut.execute(request);
+
+      // assert
+      expect(response).toMatchObject({
+        errorCode: 'PKCS11_PIN_INCORRECT',
+        message: 'PIN rejected'
+      });
+      expect(handler).not.toHaveBeenCalled();
+      expect(client.pool).not.toHaveBeenCalled();
+    });
+
+    it('should try the matching certificates one after another', async () => {
+      // arrange
+      const client = mockPkcs11Client();
+      const second = { ...pkcs11Cert, token: 'backup' };
+      client.match.mockReturnValue([pkcs11Cert, second]);
+      client.identity
+        .mockRejectedValueOnce(
+          new Pkcs11Error(Pkcs11ErrorCode.TOKEN_NOT_FOUND, 'no card', true)
+        )
+        .mockRejectedValueOnce(
+          new Pkcs11Error(Pkcs11ErrorCode.KEY_NOT_FOUND, 'no key', true)
+        );
+      const { request } = createRequest({ url: 'https://127.0.0.1:1/' });
+      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert, second] } });
+
+      // act
+      const response = await sut.execute(request);
+
+      // assert
+      expect(client.identity.mock.calls).toEqual([[pkcs11Cert], [second]]);
+      expect(response).toMatchObject({ errorCode: 'PKCS11_KEY_NOT_FOUND' });
+      verify(certificatesResolverMock.resolve(anything(), anything())).never();
+    });
+
+    it('should send the requests on one long-lived keep-alive handle', async () => {
+      // arrange
+      const client = mockPkcs11Client();
+      const connections: string[] = [];
+      const { baseUrl } = await startServer((req, res) => {
+        connections.push(req.headers.connection ?? '');
+        res.end('ok');
+      });
+      const create = jest.fn(() => new Curl());
+      const pool = new CurlHandlePool(1, create);
+      client.pool.mockReturnValue(pool);
+      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] } });
+
+      // act
+      const responses = [];
+      for (let i = 0; i < 3; i++) {
+        responses.push(
+          await sut.execute(createRequest({ url: `${baseUrl}/` }).request)
+        );
+      }
+
+      // assert
+      try {
+        expect(responses.map(({ statusCode }) => statusCode)).toEqual([
+          200, 200, 200
+        ]);
+        expect(create).toHaveBeenCalledTimes(1);
+        expect(connections).not.toContain('close');
+      } finally {
+        await new Promise((resolve) => setImmediate(resolve));
+        pool.close();
+      }
+    });
+
+    it('should serve a URL without a PKCS#11 certificate as before', async () => {
+      // arrange
+      const client = mockPkcs11Client();
+      client.match.mockReturnValue([]);
+      const { baseUrl } = await startServer((_req, res) => res.end('ok'));
+      const { request } = createRequest({ url: `${baseUrl}/` });
+      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] } });
+
+      // act
+      const response = await sut.execute(request);
+
+      // assert
+      expect(response.statusCode).toBe(200);
+      expect(client.identity).not.toHaveBeenCalled();
+    });
   });
 });

@@ -44,7 +44,7 @@ export class Pkcs11CertParser {
       daemon = false
     }: Pkcs11CertParserOptions = {}
   ): Pkcs11Cert[] {
-    return Pkcs11CertParser.expand(entries).map(
+    const certs = Pkcs11CertParser.expand(entries).map(
       (raw: RawEntry, index: number) => {
         try {
           return Pkcs11CertParser.toDescriptor(raw, defaultModule, env, daemon);
@@ -57,6 +57,19 @@ export class Pkcs11CertParser {
         }
       }
     );
+    const modules = new Set(certs.map(({ module }: Pkcs11Cert) => module));
+
+    // The OpenSSL providers can be loaded only once per process, under their
+    // own fixed name, and each instance drives a single vendor module.
+    if (modules.size > 1) {
+      throw new Error(
+        `Option --pkcs11-cert: all entries must use the same "module"; found ${[
+          ...modules
+        ].join(', ')}.`
+      );
+    }
+
+    return certs;
   }
 
   /**

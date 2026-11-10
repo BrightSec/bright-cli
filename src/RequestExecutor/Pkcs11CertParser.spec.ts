@@ -147,6 +147,24 @@ describe('Pkcs11CertParser', () => {
       expect(result.module).toBe(other);
     });
 
+    it('should reject entries that use different modules', () => {
+      // arrange
+      const other = join(dir, 'other-pkcs11.so');
+      writeFileSync(other, '');
+
+      // act
+      const act = () =>
+        Pkcs11CertParser.parse([
+          { hostname: 'a.com', module, pinFile },
+          { hostname: 'b.com', module: other, pinFile }
+        ]);
+
+      // assert
+      expect(act).toThrow(
+        `Option --pkcs11-cert: all entries must use the same "module"; found ${module}, ${other}.`
+      );
+    });
+
     it('should resolve relative paths to absolute ones', () => {
       // act
       const [result]: Pkcs11Cert[] = Pkcs11CertParser.parse([

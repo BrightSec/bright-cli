@@ -107,6 +107,12 @@ jobs:
       - name: Set distribution
         run: npx json -I -f package.json -e "this.brightCli.distribution='${{ matrix.target }}-executable'"
 
+      # pkcs11js is an optional dependency: a failed native build would only
+      # surface at runtime, as PKCS#11 missing from the executable.
+      - name: Check the pkcs11js addon
+        shell: bash
+        run: test -f node_modules/pkcs11js/build/Release/pkcs11.node
+
       - name: Build executable file
         run: npm run build:pkg -- -t node24-${{ matrix.target }}-x64
 
@@ -127,6 +133,100 @@ jobs:
           "$BIN" --version | tee version.txt
           grep -q "${{ needs.build.outputs.version }}" version.txt
           "$BIN" repeater --help > /dev/null
+
+      # Pinned by SHA-256: libp11's provider ships next to the executable, and
+      # SoftHSM2 / OpenSC are loaded by the smoke test.
+      - name: Download libp11, SoftHSM2 and OpenSC
+        if: startsWith(matrix.os, 'win')
+        shell: bash
+        run: |
+          mkdir -p .pkcs11-tools && cd .pkcs11-tools
+          curl -fsSLo softhsm.zip https://github.com/disig/SoftHSM2-for-Windows/releases/download/v2.5.0/SoftHSM2-2.5.0-portable.zip
+          curl -fsSLo libp11.zip https://github.com/OpenSC/libp11/releases/download/libp11-0.4.21/libp11-0.4.21-x64.zip
+          curl -fsSLo opensc.msi https://github.com/OpenSC/OpenSC/releases/download/0.27.1/OpenSC-0.27.1_x64.msi
+          sha256sum -c - <<'EOF'
+          85273bcc1a6b90e877f7bb4f7e90221d57103d8f5241d154a79dd730a135b910  softhsm.zip
+          443f6ddbf15b437df0e37190c8673e76fa5f7268d22d99052d1e9b2fe1af46fd  libp11.zip
+          88ea45e848063ff5f3594a457b7f023223472eae9c9c543f8035f7689bb7b319  opensc.msi
+          EOF
+          unzip -q softhsm.zip
+          unzip -q libp11.zip -d libp11
+          curl -fsSLo libp11/COPYING https://raw.githubusercontent.com/OpenSC/libp11/libp11-0.4.21/COPYING
+
+      # The Repeater looks for pkcs11prov.dll next to its executable; the
+      # provider imports libcrypto-3-x64.dll, which Windows also finds there.
+      - name: Assemble the smart-card bundle
+        if: startsWith(matrix.os, 'win')
+        shell: bash
+        run: |
+          for dir in "/c/Program Files/OpenSSL/bin" "/c/Program Files/OpenSSL-Win64/bin"; do
+            [ -e "$dir/libcrypto-3-x64.dll" ] && OPENSSL_DIR="$dir" && break
+          done
+          [ -n "${OPENSSL_DIR:-}" ] || { echo "libcrypto-3-x64.dll not found" >&2; exit 1; }
+          OPENSSL_VERSION="$(strings "$OPENSSL_DIR/libcrypto-3-x64.dll" | grep -m1 -E '^OpenSSL 3\.[0-9]+\.[0-9]+')"
+          mkdir -p smartcard
+          cp bin/cli.exe smartcard/bright-cli.exe
+          cp .pkcs11-tools/libp11/pkcs11prov.dll "$OPENSSL_DIR/libcrypto-3-x64.dll" smartcard/
+          cp .pkcs11-tools/libp11/COPYING smartcard/LICENSE-libp11.txt
+          curl -fsSLo smartcard/LICENSE-OpenSSL.txt https://www.apache.org/licenses/LICENSE-2.0.txt
+          cat > smartcard/THIRD-PARTY-NOTICES.txt <<EOF
+          pkcs11prov.dll: OpenSSL PKCS#11 provider from libp11 0.4.21
+            https://github.com/OpenSC/libp11/releases/tag/libp11-0.4.21
+            LGPL-2.1-or-later, see LICENSE-libp11.txt. Source: https://github.com/OpenSC/libp11/tree/libp11-0.4.21
+
+          libcrypto-3-x64.dll: ${OPENSSL_VERSION}
+            https://www.openssl.org/
+            Apache License 2.0, see LICENSE-OpenSSL.txt.
+          EOF
+          ls -l smartcard
+
+      - name: Install OpenSC (pkcs11-tool)
+        if: startsWith(matrix.os, 'win')
+        shell: pwsh
+        run: |
+          $p = Start-Process msiexec.exe -ArgumentList '/i', "$PWD\.pkcs11-tools\opensc.msi", '/qn', '/norestart' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "OpenSC install failed: $($p.ExitCode)" }
+          'C:\Program Files\OpenSC Project\OpenSC\tools' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # A fake Bright cloud sends the Repeater one request to an mTLS target
+      # that requires the client certificate on the SoftHSM2 token.
+      - name: Smoke-test the smart-card bundle
+        if: startsWith(matrix.os, 'win')
+        shell: bash
+        env:
+          PKCS11_TEST_SOFTHSM_DIR: ${{ github.workspace }}/.pkcs11-tools/SoftHSM2
+          PKCS11_TEST_PROVIDER_DIR: ${{ github.workspace }}/smartcard
+          PKCS11_TEST_OPENSSL_DIR: ${{ github.workspace }}/smartcard
+        run: |
+          tests/pkcs11/setup.sh
+          . tests/pkcs11/.work/pkcs11.env
+          # The executable must find the provider by itself, next to it.
+          unset OPENSSL_MODULES OPENSSL_CONF
+          WORK="$(cygpath -m "$PWD/tests/pkcs11/.work")"
+          echo 1234 > tests/pkcs11/.work/pin.txt
+          echo 0000 > tests/pkcs11/.work/bad-pin.txt
+          npx ts-node tests/pkcs11/target.ts &
+          sleep 5
+          NODE="$(command -v node)"
+          # Only Node and Windows: an OpenSSL elsewhere on
+          # PATH (Git, the runner image) must not hide a DLL missing from the bundle.
+          CLEAN_PATH="$(dirname "$NODE"):/c/Windows/System32:/c/Windows"
+          for expected in 200:pin.txt PKCS11_PIN_INCORRECT:bad-pin.txt; do
+            CERT="{\"hostname\":\"localhost\",\"port\":8443,\"token\":\"$PKCS11_TEST_TOKEN\",\"pinFile\":\"$WORK/${expected#*:}\"}"
+            PATH="$CLEAN_PATH" "$NODE" -r ts-node/register/transpile-only tests/pkcs11/repeater-smoke.ts \
+              https://localhost:8443/ "${expected%%:*}" -- \
+              "$(cygpath -m "$PWD/smartcard/bright-cli.exe")" repeater --hostname localhost \
+              --token smoke.token --id 8PY6wKetVqmfMC9K9g4A7Y \
+              --pkcs11-module "$PKCS11_TEST_MODULE" --pkcs11-cert "$CERT"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: startsWith(matrix.os, 'win')
+        with:
+          name: bright-cli-win-x64-smartcard
+          path: |
+            smartcard/
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:

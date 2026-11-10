@@ -90,6 +90,7 @@
     "prettier": "^2.7.1",
     "resedit": "3.1.0",
     "semantic-release": "^25.0.2",
+    "socket.io": "4.8.3",
     "terser-webpack-plugin": "^5.3.16",
     "ts-jest": "^29.4.6",
     "ts-loader": "^9.5.4",
@@ -138,6 +139,7 @@
       "./node_modules/@neuralegion/raw-socket/prebuilds/win32-x64/@neuralegion+raw-socket.abi137.node",
       "./node_modules/@neuralegion/raw-socket/prebuilds/linux-x64/@neuralegion+raw-socket.abi137.glibc.node",
       "./node_modules/@neuralegion/raw-socket/prebuilds/darwin-x64+arm64/@neuralegion+raw-socket.abi137.node",
+      "./node_modules/pkcs11js/build/Release/pkcs11.node",
       "./node_modules/rotating-file-stream/**"
     ],
     "targets": [

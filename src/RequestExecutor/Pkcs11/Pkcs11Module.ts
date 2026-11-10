@@ -1,6 +1,7 @@
 export interface Pkcs11Token {
   slot: Buffer;
   label: string;
+  serial: string;
   flags: number;
 }
 

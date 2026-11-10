@@ -2306,7 +2306,11 @@ describe('HttpRequestExecutor', () => {
       // arrange
       const client = mockPkcs11Client();
       client.match.mockReturnValue([]);
-      const { baseUrl } = await startServer((_req, res) => res.end('ok'));
+      let connection: string | undefined;
+      const { baseUrl } = await startServer((req, res) => {
+        connection = req.headers.connection;
+        res.end('ok');
+      });
       const { request } = createRequest({ url: `${baseUrl}/` });
       const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] } });
 
@@ -2315,7 +2319,81 @@ describe('HttpRequestExecutor', () => {
 
       // assert
       expect(response.statusCode).toBe(200);
+      expect(connection).toBe('close');
       expect(client.identity).not.toHaveBeenCalled();
+    });
+
+    it('should not limit the wait for a PKCS#11 connection when the timeout is 0', async () => {
+      // arrange
+      const client = mockPkcs11Client();
+      const { baseUrl } = await startServer((_req, res) => res.end('ok'));
+      const pool = new CurlHandlePool(1);
+      const acquire = jest.spyOn(pool, 'acquire');
+      client.pool.mockReturnValue(pool);
+      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] }, timeout: 0 });
+
+      // act
+      const response = await sut.execute(
+        createRequest({ url: `${baseUrl}/` }).request
+      );
+
+      // assert
+      try {
+        expect(response.statusCode).toBe(200);
+        expect(acquire).toHaveBeenCalledWith(undefined);
+      } finally {
+        await new Promise((resolve) => setImmediate(resolve));
+        pool.close();
+      }
+    });
+
+    it('should time out a request that waits too long for a PKCS#11 connection', async () => {
+      // arrange
+      const client = mockPkcs11Client();
+      const pool = new CurlHandlePool(0);
+      client.pool.mockReturnValue(pool);
+      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] }, timeout: 50 });
+
+      // act
+      const response = await sut.execute(
+        createRequest({ url: 'https://127.0.0.1:1/' }).request
+      );
+
+      // assert
+      expect(response).toMatchObject({
+        errorCode: 'ETIMEDOUT',
+        message: expect.stringContaining('free PKCS#11 connection')
+      });
+    });
+
+    it('should report a provider that OpenSSL cannot load as a PKCS#11 error', async () => {
+      // arrange
+      const client = mockPkcs11Client();
+      client.identity.mockResolvedValue({
+        provider: 'no-such-provider',
+        keyUri: 'pkcs11:token=card;type=private',
+        certFile: '/tmp/client.pem',
+        tls12Only: false
+      });
+      const pool = new CurlHandlePool(1);
+      client.pool.mockReturnValue(pool);
+      const sut = buildSut({ pkcs11: { certs: [pkcs11Cert] } });
+
+      // act
+      const response = await sut.execute(
+        createRequest({ url: 'https://127.0.0.1:1/' }).request
+      );
+
+      // assert
+      try {
+        expect(response).toMatchObject({
+          errorCode: 'PKCS11_MODULE_LOAD_FAILED',
+          message: expect.stringContaining('no-such-provider')
+        });
+      } finally {
+        await new Promise((resolve) => setImmediate(resolve));
+        pool.close();
+      }
     });
   });
 });

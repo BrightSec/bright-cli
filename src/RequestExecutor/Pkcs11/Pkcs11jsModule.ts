@@ -45,7 +45,12 @@ export class Pkcs11jsModule implements Pkcs11Module {
       this.lib.C_GetSlotList(true).map((slot: Buffer) => {
         const info = this.lib.C_GetTokenInfo(slot);
 
-        return { slot, label: info.label.trim(), flags: info.flags };
+        return {
+          slot,
+          label: info.label.trim(),
+          serial: info.serialNumber.trim(),
+          flags: info.flags
+        };
       })
     );
   }

@@ -15,6 +15,21 @@ describe('Pkcs11Uri', () => {
       expect(uri).toBe('pkcs11:token=card;id=%01%ab;type=private');
     });
 
+    it('should add the serial after the token label', () => {
+      // act
+      const uri = Pkcs11Uri.build({
+        token: 'PIV Card',
+        serial: '00c0ffee',
+        type: 'cert',
+        id: Buffer.from([1])
+      });
+
+      // assert
+      expect(uri).toBe(
+        'pkcs11:token=PIV%20Card;serial=00c0ffee;id=%01;type=cert'
+      );
+    });
+
     it('should use the label when there is no id', () => {
       // act
       const uri = Pkcs11Uri.build({

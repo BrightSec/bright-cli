@@ -12,6 +12,7 @@ import { CurlSeekOrigin } from './CurlSeekOrigin';
 import { CurlErrorMapper } from './CurlErrorMapper';
 import { Pkcs11Cert } from './Pkcs11Cert';
 import { Pkcs11Client } from './Pkcs11/Pkcs11Client';
+import { Pkcs11Error, Pkcs11ErrorCode } from './Pkcs11/Pkcs11Error';
 import { Pkcs11Identity } from './Pkcs11/Pkcs11Preflight';
 import { inject, injectable } from 'tsyringe';
 import iconv from 'iconv-lite';
@@ -367,7 +368,14 @@ export class HttpRequestExecutor implements RequestExecutor {
   }
 
   private applyCurlPkcs11(curl: Curl, identity: Pkcs11Identity): void {
-    curl.setOpt('SSLENGINE', identity.provider);
+    try {
+      curl.setOpt('SSLENGINE', identity.provider);
+    } catch (e) {
+      throw new Pkcs11Error(
+        Pkcs11ErrorCode.MODULE_LOAD_FAILED,
+        `OpenSSL could not load the PKCS#11 provider "${identity.provider}": ${e?.message}`
+      );
+    }
     curl.setOpt('SSLKEYTYPE', 'PROV');
     curl.setOpt('SSLKEY', identity.keyUri);
 
@@ -801,7 +809,10 @@ export class HttpRequestExecutor implements RequestExecutor {
     cert: Pkcs11Cert
   ): Promise<Response> {
     const identity = await this.pkcs11.identity(cert);
-    const timeout = request.timeout ?? this.options.timeout;
+    const configured = request.timeout ?? this.options.timeout;
+    // Zero or a missing value means no limit, as for other requests.
+    const timeout =
+      typeof configured === 'number' && configured > 0 ? configured : undefined;
     const started = Date.now();
     const pool = this.pkcs11.pool(cert);
     const curl = await pool.acquire(timeout);
@@ -817,9 +828,9 @@ export class HttpRequestExecutor implements RequestExecutor {
         identity,
         // Time spent waiting for a free handle counts against the request timeout.
         timeout:
-          typeof timeout === 'number'
-            ? Math.max(1, timeout - (Date.now() - started))
-            : undefined
+          timeout === undefined
+            ? undefined
+            : Math.max(1, timeout - (Date.now() - started))
       });
     } finally {
       // Same deferral as curl.close() for fresh handles: the next request must

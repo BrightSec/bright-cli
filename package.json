@@ -43,7 +43,6 @@
     "iconv-lite": "^0.6.3",
     "js-yaml": "^4.3.2",
     "ms": "^2.1.3",
-    "pkcs11js": "2.1.7",
     "reflect-metadata": "^0.1.13",
     "rotating-file-stream": "^3.2.5",
     "semver": "^7.6.0",
@@ -195,5 +194,8 @@
     "cosmiconfig": {
       "typescript": "5.9.3"
     }
+  },
+  "optionalDependencies": {
+    "pkcs11js": "2.1.7"
   }
 }

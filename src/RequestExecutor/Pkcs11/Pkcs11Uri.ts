@@ -1,5 +1,6 @@
 export interface Pkcs11UriParts {
   token: string;
+  serial?: string;
   type: 'private' | 'cert';
   id?: Buffer;
   object?: string;
@@ -13,12 +14,18 @@ export interface Pkcs11UriParts {
 export class Pkcs11Uri {
   public static build({
     token,
+    serial,
     type,
     id,
     object,
     pin
   }: Pkcs11UriParts): string {
     const path = [`token=${Pkcs11Uri.encode(token)}`];
+
+    // Cards of the same model often share a label; the serial tells them apart.
+    if (serial) {
+      path.push(`serial=${Pkcs11Uri.encode(serial)}`);
+    }
 
     if (id?.length) {
       path.push(`id=${Pkcs11Uri.encodeBytes(id)}`);

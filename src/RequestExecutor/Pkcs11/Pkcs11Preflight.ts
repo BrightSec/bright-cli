@@ -40,6 +40,8 @@ interface Login {
   module: Pkcs11Module;
   token: Pkcs11Token;
   session: Buffer;
+  /** Undefined when the token needs no login. */
+  pin?: string;
 }
 
 /**
@@ -148,7 +150,7 @@ export class Pkcs11Preflight {
   }
 
   private resolveIdentity(cert: Pkcs11Cert): Pkcs11Identity {
-    const { module, token, session } = this.login(cert);
+    const { module, token, session, pin } = this.login(cert);
     const key = this.selectKey(module, session, cert);
     const certificate =
       cert.cert === 'token'
@@ -172,14 +174,16 @@ export class Pkcs11Preflight {
       provider: this.provider,
       keyUri: Pkcs11Uri.build({
         token: token.label,
+        serial: token.serial,
         type: 'private',
         id: key.id,
         object: key.label,
-        pin: this.pin(cert)
+        pin
       }),
       certUri: certificate
         ? Pkcs11Uri.build({
             token: token.label,
+            serial: token.serial,
             type: 'cert',
             id: certificate.id,
             object: certificate.label
@@ -193,18 +197,12 @@ export class Pkcs11Preflight {
   private login(cert: Pkcs11Cert): Login {
     const module = this.loadModule(cert);
     const token = this.selectToken(module, cert);
-    const key = `${cert.module}\0${token.label}`;
+    const key = `${cert.module}\0${token.serial}\0${token.label}`;
     const previous = this.logins.get(key);
 
     if (previous instanceof Pkcs11Error) {
       throw previous;
     }
-
-    if (previous) {
-      return previous;
-    }
-
-    this.assertPinUsable(token);
 
     const pin = Pkcs11Preflight.hasFlag(
       token.flags,
@@ -212,7 +210,33 @@ export class Pkcs11Preflight {
     )
       ? this.pin(cert)
       : undefined;
+
+    if (previous) {
+      // The provider logs in with the PIN in each key URI, so a different PIN
+      // for the same token would be tried on the card behind the pre-flight's back.
+      if (previous.pin !== pin) {
+        throw new Pkcs11Error(
+          Pkcs11ErrorCode.PIN_INCORRECT,
+          `Another --pkcs11-cert entry already logged in to token "${token.label}" with a different PIN; use the same PIN for all entries of a token.`
+        );
+      }
+
+      return previous;
+    }
+
+    this.assertPinUsable(token);
+
+    return this.openAndLogin(module, token, key, pin);
+  }
+
+  private openAndLogin(
+    module: Pkcs11Module,
+    token: Pkcs11Token,
+    key: string,
+    pin: string | undefined
+  ): Login {
     let session: Buffer | undefined;
+    let attempted = false;
 
     try {
       // The session stays open for the life of the process: closing the last
@@ -220,16 +244,17 @@ export class Pkcs11Preflight {
       session = module.openSession(token.slot);
 
       if (pin !== undefined) {
+        attempted = true;
         this.loginOnce(module, session, pin);
       }
 
-      const login = { module, token, session };
+      const login = { module, token, session, pin };
       this.logins.set(key, login);
 
       return login;
     } catch (e) {
       this.closeQuietly(module, session);
-      const error = this.toLoginError(e, token);
+      const error = this.toLoginError(e, token, attempted);
       if (!error.retryable) {
         this.logins.set(key, error);
       }
@@ -260,7 +285,11 @@ export class Pkcs11Preflight {
     }
   }
 
-  private toLoginError(e: unknown, token: Pkcs11Token): Pkcs11Error {
+  private toLoginError(
+    e: unknown,
+    token: Pkcs11Token,
+    attempted: boolean
+  ): Pkcs11Error {
     if (e instanceof Pkcs11Error) {
       return e;
     }
@@ -281,10 +310,14 @@ export class Pkcs11Preflight {
       );
     }
 
+    // Some vendors report a wrong PIN as a generic failure; once C_Login has
+    // been called, another attempt may cost the card a PIN retry.
     return new Pkcs11Error(
       Pkcs11ErrorCode.TOKEN_NOT_FOUND,
-      `Token "${token.label}" is not usable (${ckr}).`,
-      true
+      attempted
+        ? `Logging in to token "${token.label}" failed (${ckr}). The Repeater will not try again, to protect the PIN retry counter; restart it once the card works.`
+        : `Token "${token.label}" is not usable (${ckr}).`,
+      !attempted
     );
   }
 
@@ -292,6 +325,10 @@ export class Pkcs11Preflight {
     try {
       return this.loader.load(cert.module);
     } catch (e) {
+      if (e instanceof Pkcs11Error) {
+        throw e;
+      }
+
       throw new Pkcs11Error(
         Pkcs11ErrorCode.MODULE_LOAD_FAILED,
         `Cannot load the PKCS#11 module ${cert.module}: ${e?.message}`,
@@ -302,13 +339,21 @@ export class Pkcs11Preflight {
 
   private selectToken(module: Pkcs11Module, cert: Pkcs11Cert): Pkcs11Token {
     const tokens = module.tokens();
-    const token = cert.token
-      ? tokens.find(({ label }: Pkcs11Token) => label === cert.token)
-      : tokens.length === 1
-      ? tokens[0]
-      : undefined;
+    const candidates = cert.token
+      ? tokens.filter(({ label }: Pkcs11Token) => label === cert.token)
+      : tokens;
 
-    if (!token) {
+    if (candidates.length > 1 && cert.token) {
+      throw new Pkcs11Error(
+        Pkcs11ErrorCode.TOKEN_NOT_FOUND,
+        `Several tokens are labelled "${cert.token}" (serials ${candidates
+          .map(({ serial }: Pkcs11Token) => serial)
+          .join(', ')}); leave only one of them connected.`,
+        true
+      );
+    }
+
+    if (candidates.length !== 1) {
       const found = tokens.length
         ? `found: ${tokens.map(({ label }) => `"${label}"`).join(', ')}`
         : 'no token is present (is the card inserted?)';
@@ -321,7 +366,7 @@ export class Pkcs11Preflight {
       );
     }
 
-    return token;
+    return candidates[0];
   }
 
   private assertPinUsable(token: Pkcs11Token): void {

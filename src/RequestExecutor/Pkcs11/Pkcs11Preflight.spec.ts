@@ -27,9 +27,14 @@ interface FakeCard {
   login?: jest.Mock;
 }
 
-const token = (label = 'card', flags = CKF_LOGIN_REQUIRED): Pkcs11Token => ({
-  slot: Buffer.from([label.length]),
+const token = (
+  label = 'card',
+  flags = CKF_LOGIN_REQUIRED,
+  serial = `${label}-serial`
+): Pkcs11Token => ({
+  slot: Buffer.from(serial),
   label,
+  serial,
   flags
 });
 
@@ -120,8 +125,9 @@ describe('Pkcs11Preflight', () => {
       // assert
       expect(identity).toEqual({
         provider: 'pkcs11prov',
-        keyUri: 'pkcs11:token=card;id=%01;type=private?pin-value=1234',
-        certUri: 'pkcs11:token=card;id=%01;type=cert',
+        keyUri:
+          'pkcs11:token=card;serial=card-serial;id=%01;type=private?pin-value=1234',
+        certUri: 'pkcs11:token=card;serial=card-serial;id=%01;type=cert',
         certFile: undefined,
         tls12Only: false
       });
@@ -192,6 +198,97 @@ describe('Pkcs11Preflight', () => {
       });
       expect(module.login).toHaveBeenCalledTimes(1);
       expect(module.closeSession).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not retry a login that failed with a generic error', async () => {
+      // arrange
+      const module = fakeModule({
+        login: jest.fn(() => {
+          throw new Pkcs11ModuleError('CKR_FUNCTION_FAILED');
+        })
+      });
+      let now = 0;
+      const { preflight } = create(module, { now: () => now });
+      const cert = descriptor();
+      await expect(preflight.identity(cert)).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.TOKEN_NOT_FOUND,
+        retryable: false
+      });
+
+      // act
+      now = 60_000;
+      const result = preflight.identity(descriptor({ hostname: 'other.com' }));
+
+      // assert
+      await expect(result).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.TOKEN_NOT_FOUND
+      });
+      expect(module.login).toHaveBeenCalledTimes(1);
+    });
+
+    it('should reject a second entry on the same token with a different PIN', async () => {
+      // arrange
+      const module = fakeModule();
+      const { preflight } = create(module, { readFile: () => '9999' });
+      await preflight.identity(descriptor());
+
+      // act
+      const result = preflight.identity(
+        descriptor({
+          hostname: 'other.com',
+          pinEnv: undefined,
+          pinFile: '/run/other-pin'
+        })
+      );
+
+      // assert
+      await expect(result).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.PIN_INCORRECT,
+        message: expect.stringContaining('different PIN')
+      });
+      expect(module.login).toHaveBeenCalledTimes(1);
+    });
+
+    it('should refuse to choose between tokens with the same label', async () => {
+      // arrange
+      const module = fakeModule({
+        tokens: [
+          token('PIV Card', CKF_LOGIN_REQUIRED, 'A1'),
+          token('PIV Card', CKF_LOGIN_REQUIRED, 'B2')
+        ]
+      });
+      const { preflight } = create(module);
+
+      // act
+      const result = preflight.identity(descriptor({ token: 'PIV Card' }));
+
+      // assert
+      await expect(result).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.TOKEN_NOT_FOUND,
+        message:
+          'Several tokens are labelled "PIV Card" (serials A1, B2); leave only one of them connected.'
+      });
+      expect(module.login).not.toHaveBeenCalled();
+    });
+
+    it('should report a loader error as it is', async () => {
+      // arrange
+      const error = new Pkcs11Error(
+        Pkcs11ErrorCode.MODULE_LOAD_FAILED,
+        'The pkcs11js native addon is not available'
+      );
+      const loader: Pkcs11ModuleLoader = {
+        load: jest.fn(() => {
+          throw error;
+        })
+      };
+      const preflight = new Pkcs11Preflight(loader, 'pkcs11prov', { env });
+
+      // act
+      const result = preflight.identity(descriptor());
+
+      // assert
+      await expect(result).rejects.toBe(error);
     });
 
     it('should not put the PIN into the error message', async () => {
@@ -425,7 +522,9 @@ describe('Pkcs11Preflight', () => {
       const identity = await preflight.identity(descriptor());
 
       // assert
-      expect(identity.certUri).toBe('pkcs11:token=card;id=%01;type=cert');
+      expect(identity.certUri).toBe(
+        'pkcs11:token=card;serial=card-serial;id=%01;type=cert'
+      );
     });
 
     it('should list the keys when it cannot choose one', async () => {

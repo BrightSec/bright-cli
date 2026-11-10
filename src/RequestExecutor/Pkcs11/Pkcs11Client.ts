@@ -62,8 +62,7 @@ export class Pkcs11Client {
       logger.debug('PKCS#11: using OpenSSL provider %s', provider);
       this.preflight = new Pkcs11Preflight(
         loader,
-        options.module,
-        config.name,
+        { module: options.module, provider: config.name },
         { env }
       );
     } catch (e) {

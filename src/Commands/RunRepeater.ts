@@ -19,6 +19,14 @@ export class RunRepeater implements CommandModule {
     RequestExecutorOptions['pkcs11']
   >();
 
+  // The daemon service is installed with argv only, so values from these are lost.
+  private static readonly PKCS11_ENV_OPTIONS: Readonly<Record<string, string>> =
+    {
+      REPEATER_PKCS11_CERT: '--pkcs11-cert',
+      REPEATER_PKCS11_MODULE: '--pkcs11-module',
+      REPEATER_PKCS11_PROVIDER: '--pkcs11-provider'
+    };
+
   public readonly command = 'repeater [options]';
   public readonly describe = 'Starts an on-prem agent.';
 
@@ -38,11 +46,8 @@ export class RunRepeater implements CommandModule {
     const provider = args.pkcs11Provider as string | undefined;
     const module = args.pkcs11Module as string | undefined;
 
-    // The service definition keeps only argv, so env-supplied entries would be lost.
-    if (daemon && process.env.REPEATER_PKCS11_CERT) {
-      throw new Error(
-        "REPEATER_PKCS11_CERT is not available to the daemon service, which does not inherit this shell's environment. Pass --pkcs11-cert instead."
-      );
+    if (daemon) {
+      RunRepeater.assertNoPkcs11Env();
     }
 
     const certs = Pkcs11CertParser.parse(args.pkcs11Cert, { daemon });
@@ -68,6 +73,16 @@ export class RunRepeater implements CommandModule {
     }
 
     return { module: resolvedModule, provider: resolvedProvider, certs };
+  }
+
+  private static assertNoPkcs11Env(): void {
+    for (const [name, flag] of Object.entries(RunRepeater.PKCS11_ENV_OPTIONS)) {
+      if (process.env[name]) {
+        throw new Error(
+          `${name} is not available to the daemon service, which does not inherit this shell's environment. Pass ${flag} instead.`
+        );
+      }
+    }
   }
 
   private static pkcs11Options(

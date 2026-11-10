@@ -358,5 +358,16 @@ describe('Pkcs11CertParser', () => {
         /^Option --pkcs11-provider .*missing\.so does not exist or is not a file\.$/
       );
     });
+
+    it('should reject a directory', () => {
+      // act
+      const act = () =>
+        Pkcs11CertParser.resolveFile(dir, 'Option --pkcs11-module');
+
+      // assert
+      expect(act).toThrow(
+        `Option --pkcs11-module ${dir} does not exist or is not a file.`
+      );
+    });
   });
 });

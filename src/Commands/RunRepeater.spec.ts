@@ -345,23 +345,51 @@ describe('RunRepeater', () => {
       expect(handler).not.toHaveBeenCalled();
     });
 
-    it('should reject REPEATER_PKCS11_CERT when installing the daemon', async () => {
-      // arrange
-      process.env.REPEATER_PKCS11_CERT = JSON.stringify({
-        hostname: 'a.example.com',
-        pinFile
-      });
+    it.each([
+      {
+        name: 'REPEATER_PKCS11_CERT',
+        flag: '--pkcs11-cert',
+        value: () => JSON.stringify({ hostname: 'a.example.com', pinFile })
+      },
+      {
+        name: 'REPEATER_PKCS11_MODULE',
+        flag: '--pkcs11-module',
+        value: () => module
+      },
+      {
+        name: 'REPEATER_PKCS11_PROVIDER',
+        flag: '--pkcs11-provider',
+        value: () => module
+      }
+    ])(
+      'should reject $name when installing the daemon',
+      async ({ name, flag, value }) => {
+        // arrange
+        process.env[name] = value();
 
+        // act
+        const result = settle(() =>
+          parseRepeater(['--daemon'], isolatedCli())
+        ).finally(() => delete process.env[name]);
+
+        // assert
+        await expect(result).rejects.toThrow(
+          `${name} is not available to the daemon service, which does not inherit this shell's environment. Pass ${flag} instead.`
+        );
+        expect(handler).not.toHaveBeenCalled();
+      }
+    );
+
+    it('should not validate --pkcs11-module when removing the daemon', async () => {
       // act
-      const result = settle(() =>
-        parseRepeater(['--daemon'], isolatedCli())
-      ).finally(() => delete process.env.REPEATER_PKCS11_CERT);
+      await parseRepeater([
+        '--remove-daemon',
+        '--pkcs11-module',
+        join(dir, 'removed-pkcs11.so')
+      ]);
 
       // assert
-      await expect(result).rejects.toThrow(
-        /REPEATER_PKCS11_CERT is not available to the daemon service/
-      );
-      expect(handler).not.toHaveBeenCalled();
+      expect(handler).toHaveBeenCalled();
     });
 
     it('should not validate --pkcs11-cert entries when removing the daemon', async () => {

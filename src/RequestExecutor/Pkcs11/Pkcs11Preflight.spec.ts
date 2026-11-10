@@ -92,6 +92,7 @@ const descriptor = (overrides: Partial<Pkcs11Cert> = {}): Pkcs11Cert => ({
 });
 
 describe('Pkcs11Preflight', () => {
+  const target = { module: MODULE, provider: 'pkcs11prov' };
   const env = { CARD_PIN: PIN };
 
   const create = (
@@ -105,7 +106,7 @@ describe('Pkcs11Preflight', () => {
 
     return {
       loader,
-      preflight: new Pkcs11Preflight(loader, MODULE, 'pkcs11prov', {
+      preflight: new Pkcs11Preflight(loader, target, {
         env,
         retryAfterMs: 1000,
         ...options
@@ -281,7 +282,7 @@ describe('Pkcs11Preflight', () => {
           throw error;
         })
       };
-      const preflight = new Pkcs11Preflight(loader, MODULE, 'pkcs11prov', {
+      const preflight = new Pkcs11Preflight(loader, target, {
         env
       });
 
@@ -431,7 +432,7 @@ describe('Pkcs11Preflight', () => {
           );
         })
       };
-      const preflight = new Pkcs11Preflight(loader, MODULE, 'pkcs11prov', {
+      const preflight = new Pkcs11Preflight(loader, target, {
         env
       });
 

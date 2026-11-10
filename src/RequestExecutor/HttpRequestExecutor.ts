@@ -10,6 +10,10 @@ import { CertificatesResolver } from './CertificatesResolver';
 import { CurlSeekResult } from './CurlSeekResult';
 import { CurlSeekOrigin } from './CurlSeekOrigin';
 import { CurlErrorMapper } from './CurlErrorMapper';
+import { Pkcs11Cert } from './Pkcs11Cert';
+import { Pkcs11Client } from './Pkcs11/Pkcs11Client';
+import { Pkcs11Error, Pkcs11ErrorCode } from './Pkcs11/Pkcs11Error';
+import { Pkcs11Identity } from './Pkcs11/Pkcs11Preflight';
 import { inject, injectable } from 'tsyringe';
 import iconv from 'iconv-lite';
 import { safeParse } from 'fast-content-type-parse';
@@ -18,6 +22,8 @@ import {
   CurlAuth,
   CurlFeature,
   CurlGssApi,
+  CurlSslVersion,
+  CurlSslVersionMax,
   HeaderInfo,
   Multi
 } from '@brightsec/node-libcurl';
@@ -34,6 +40,13 @@ type ResponseScriptEntrypoint = (options: {
   body?: string;
 }) => Promise<Response | void> | Response | void;
 
+// A PKCS#11 request runs on a long-lived handle from a pool instead of a fresh one.
+interface Pkcs11Lease {
+  curl: Curl;
+  identity: Pkcs11Identity;
+  timeout?: number;
+}
+
 @injectable()
 export class HttpRequestExecutor implements RequestExecutor {
   private readonly KEEP_ALIVE_IDLE_TIMEOUT = 60;
@@ -44,6 +57,7 @@ export class HttpRequestExecutor implements RequestExecutor {
   private readonly proxyDomainsBypass?: RegExp[];
   private readonly kerberosDomains?: RegExp[];
   private readonly sharedMulti = new Multi();
+  private readonly pkcs11?: Pkcs11Client;
 
   get protocol(): Protocol {
     return Protocol.HTTP;
@@ -91,6 +105,11 @@ export class HttpRequestExecutor implements RequestExecutor {
         this.MAX_HOST_CONNECTIONS
       );
     }
+
+    if (this.options.pkcs11) {
+      this.pkcs11 = new Pkcs11Client(this.options.pkcs11);
+      this.pkcs11.warmUp();
+    }
   }
 
   public async execute(options: Request): Promise<Response> {
@@ -101,20 +120,11 @@ export class HttpRequestExecutor implements RequestExecutor {
 
       options = await this.transformScript(options);
 
-      const targetCerts: Cert[] | undefined = this.options.certs
-        ? this.certificatesResolver.resolve(options, this.options.certs)
-        : undefined;
+      const pkcs11Certs = this.pkcs11 ? this.pkcs11.match(options.url) : [];
 
-      if (targetCerts === undefined || targetCerts.length === 0) {
-        logger.debug(
-          'Executing HTTP request with following params: %j',
-          options
-        );
-
-        return await this.executeRequest(options);
-      }
-
-      return await this.tryRequestWithCertificates(options, targetCerts);
+      return await (pkcs11Certs.length
+        ? this.executeWithPkcs11(options, pkcs11Certs)
+        : this.executeWithFileCerts(options));
     } catch (err) {
       const { cause } = err;
       const { message, code, syscall, name } = cause ?? err;
@@ -135,16 +145,37 @@ export class HttpRequestExecutor implements RequestExecutor {
     }
   }
 
-  private request(options: Request): Promise<{
+  private executeWithFileCerts(options: Request): Promise<Response> {
+    const targetCerts: Cert[] | undefined = this.options.certs
+      ? this.certificatesResolver.resolve(options, this.options.certs)
+      : undefined;
+
+    if (targetCerts === undefined || targetCerts.length === 0) {
+      logger.debug('Executing HTTP request with following params: %j', options);
+
+      return this.executeRequest(options);
+    }
+
+    return this.tryRequestWithCertificates(options, targetCerts);
+  }
+
+  private request(
+    options: Request,
+    lease?: Pkcs11Lease
+  ): Promise<{
     statusCode: number;
     headers: Record<string, string | string[]>;
     rawBody: Buffer;
     ttfb: number;
   }> {
     return new Promise((resolve, reject) => {
-      const curl = new Curl();
+      const curl = lease?.curl ?? new Curl();
+      // A pooled handle keeps its OpenSSL provider across reset(); everything
+      // else from the previous request is cleared.
+      lease?.curl.reset();
+      const release = () => (lease ? undefined : curl.close());
 
-      this.configureCurl(curl, options);
+      this.configureCurl(curl, options, lease);
 
       curl.on(
         'end',
@@ -154,7 +185,7 @@ export class HttpRequestExecutor implements RequestExecutor {
 
           const headers = this.parseCurlHeaders(rawHeaders);
 
-          setImmediate(() => curl.close());
+          setImmediate(release);
 
           resolve({ statusCode, headers, rawBody, ttfb });
         }
@@ -174,7 +205,7 @@ export class HttpRequestExecutor implements RequestExecutor {
           });
         }
 
-        setImmediate(() => curl.close());
+        setImmediate(release);
         reject(err);
       });
 
@@ -182,7 +213,11 @@ export class HttpRequestExecutor implements RequestExecutor {
     });
   }
 
-  private configureCurl(curl: Curl, options: Request): void {
+  private configureCurl(
+    curl: Curl,
+    options: Request,
+    lease?: Pkcs11Lease
+  ): void {
     curl.enable(CurlFeature.NoDataParsing);
 
     const { protocol, host, auth } = parseUrl(options.url);
@@ -201,11 +236,19 @@ export class HttpRequestExecutor implements RequestExecutor {
     curl.setOpt('FOLLOWLOCATION', false);
 
     this.applyCurlBody(curl, options);
-    this.applyCurlTls(curl, options);
-    this.applyCurlTimeout(curl, options);
-    this.applyCurlHeaders(curl, options);
+    if (lease) {
+      this.applyCurlPkcs11(curl, lease.identity);
+    } else {
+      this.applyCurlTls(curl, options);
+    }
+    this.applyCurlTimeout(curl, options, lease?.timeout);
+    this.applyCurlHeaders(curl, options, !!lease);
 
-    if (this.options.reuseConnection || this.shouldApplyKerberos(options)) {
+    if (
+      lease ||
+      this.options.reuseConnection ||
+      this.shouldApplyKerberos(options)
+    ) {
       curl.setOpt('TCP_KEEPALIVE', 1);
       curl.setOpt('TCP_KEEPIDLE', this.KEEP_ALIVE_IDLE_TIMEOUT);
       curl.setMulti(this.sharedMulti);
@@ -324,15 +367,51 @@ export class HttpRequestExecutor implements RequestExecutor {
     }
   }
 
-  private applyCurlTimeout(curl: Curl, options: Request): void {
-    const timeout = options.timeout ?? this.options.timeout;
+  private applyCurlPkcs11(curl: Curl, identity: Pkcs11Identity): void {
+    try {
+      curl.setOpt('SSLENGINE', identity.provider);
+    } catch (e) {
+      throw new Pkcs11Error(
+        Pkcs11ErrorCode.MODULE_LOAD_FAILED,
+        `OpenSSL could not load the PKCS#11 provider "${identity.provider}": ${e?.message}`
+      );
+    }
+    curl.setOpt('SSLKEYTYPE', 'PROV');
+    curl.setOpt('SSLKEY', identity.keyUri);
+
+    if (identity.certUri) {
+      curl.setOpt('SSLCERTTYPE', 'PROV');
+      curl.setOpt('SSLCERT', identity.certUri);
+    } else {
+      curl.setOpt('SSLCERT', identity.certFile);
+    }
+
+    if (identity.tls12Only) {
+      // SSLVERSION packs the minimum and the maximum into disjoint bit ranges.
+      curl.setOpt(
+        'SSLVERSION',
+        CurlSslVersion.TlsV1_2 + CurlSslVersionMax.TlsV1_2
+      );
+    }
+  }
+
+  private applyCurlTimeout(
+    curl: Curl,
+    options: Request,
+    remaining?: number
+  ): void {
+    const timeout = remaining ?? options.timeout ?? this.options.timeout;
 
     if (typeof timeout === 'number') {
       curl.setOpt('TIMEOUT_MS', timeout);
     }
   }
 
-  private applyCurlHeaders(curl: Curl, request: Request): void {
+  private applyCurlHeaders(
+    curl: Curl,
+    request: Request,
+    keepAlive = false
+  ): void {
     const curlHeaders = this.buildCurlHeaders(request);
 
     // Suppress libcurl's default "User-Agent: node-libcurl/<version>" by
@@ -342,6 +421,7 @@ export class HttpRequestExecutor implements RequestExecutor {
     curl.setOpt('USERAGENT', '');
 
     if (
+      !keepAlive &&
       !this.options.reuseConnection &&
       !this.shouldApplyKerberos(request) &&
       !this.hasHeader(request, 'connection')
@@ -644,8 +724,14 @@ export class HttpRequestExecutor implements RequestExecutor {
     });
   }
 
-  private async executeRequest(request: Request): Promise<Response> {
-    const { statusCode, headers, rawBody, ttfb } = await this.request(request);
+  private async executeRequest(
+    request: Request,
+    lease?: Pkcs11Lease
+  ): Promise<Response> {
+    const { statusCode, headers, rawBody, ttfb } = await this.request(
+      request,
+      lease
+    );
 
     logger.trace(
       'received following response for request %j: headers: %j body: %s',
@@ -692,6 +778,65 @@ export class HttpRequestExecutor implements RequestExecutor {
     });
 
     return this.handleResponseScript(request, response);
+  }
+
+  // Certificates are tried one after another: a parallel attempt per
+  // certificate would multiply PIN checks and signatures on the card.
+  private async executeWithPkcs11(
+    request: Request,
+    certs: Pkcs11Cert[]
+  ): Promise<Response> {
+    let lastError: unknown;
+
+    for (const cert of certs) {
+      try {
+        return await this.executeWithPkcs11Cert(request, cert);
+      } catch (e) {
+        lastError = e;
+        logger.warn(
+          'PKCS#11 certificate for %s failed: %s',
+          cert.hostname,
+          e?.message
+        );
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async executeWithPkcs11Cert(
+    request: Request,
+    cert: Pkcs11Cert
+  ): Promise<Response> {
+    const identity = await this.pkcs11.identity(cert);
+    const configured = request.timeout ?? this.options.timeout;
+    // Zero or a missing value means no limit, as for other requests.
+    const timeout =
+      typeof configured === 'number' && configured > 0 ? configured : undefined;
+    const started = Date.now();
+    const pool = this.pkcs11.pool(cert);
+    const curl = await pool.acquire(timeout);
+
+    try {
+      logger.debug(
+        'Executing HTTP request with a PKCS#11 certificate: %j',
+        request
+      );
+
+      return await this.executeRequest(request, {
+        curl,
+        identity,
+        // Time spent waiting for a free handle counts against the request timeout.
+        timeout:
+          timeout === undefined
+            ? undefined
+            : Math.max(1, timeout - (Date.now() - started))
+      });
+    } finally {
+      // Same deferral as curl.close() for fresh handles: the next request must
+      // not reuse the handle from inside libcurl's completion callback.
+      setImmediate(() => pool.release(curl));
+    }
   }
 
   private tryRequestWithCertificates(

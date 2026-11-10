@@ -194,5 +194,8 @@
     "cosmiconfig": {
       "typescript": "5.9.3"
     }
+  },
+  "optionalDependencies": {
+    "pkcs11js": "2.1.7"
   }
 }

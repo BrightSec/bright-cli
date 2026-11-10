@@ -126,6 +126,7 @@ rm -f "$PKI/client.key" "$PKI/client.pk8" "$PKI/client.csr"
   echo "export PKCS11_TEST_OBJECT='$OBJECT'"
   echo "export PKCS11_TEST_PIN='$PIN'"
   echo "export PKCS11_TEST_PROVIDER='$PROVIDER'"
+  echo "export PKCS11_TEST_PROVIDER_LIB='$(native "$PROVIDER_LIB")'"
   # The binding's compiled-in module/engine directories point at its CI build host.
   echo "export OPENSSL_MODULES='$(native "$(dirname "$PROVIDER_LIB")")'"
   # pkcs11-provider reads PKCS11_PROVIDER_MODULE; libp11 (provider and engine) reads PKCS11_MODULE_PATH.

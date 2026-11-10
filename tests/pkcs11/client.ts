@@ -88,9 +88,13 @@ export const runJob = async (job: ClientJob): Promise<ClientResult> => {
     errors: []
   };
   let started = 0;
+  const handles: Curl[] = [];
 
   const worker = async (): Promise<void> => {
     const handle = job.persistentHandles ? createHandle(job, multi) : undefined;
+    if (handle) {
+      handles.push(handle);
+    }
 
     while (started < total) {
       started++;
@@ -105,11 +109,12 @@ export const runJob = async (job: ClientJob): Promise<ClientResult> => {
         result.bodies.push(body);
       }
     }
-
-    handle?.close();
   };
 
   await Promise.all(Array.from({ length: workers }, worker));
+  // Closing a handle unloads its provider instance, which tears down the module
+  // state that handshakes still running on other handles depend on.
+  handles.forEach((handle: Curl) => handle.close());
   multi?.close();
 
   return result;

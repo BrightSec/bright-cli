@@ -40,7 +40,6 @@ describe('HttpRequestExecutor', () => {
 
   const cert = (overrides: Partial<Pkcs11Cert> = {}): Pkcs11Cert => ({
     hostname: 'localhost',
-    module: env.module,
     pinEnv: 'CARD_PIN',
     token: env.token,
     cert: 'token',
@@ -69,7 +68,7 @@ describe('HttpRequestExecutor', () => {
       // act
       const result = await run({
         urls: urls(30),
-        pkcs11: { certs: [cert()], provider: env.provider }
+        pkcs11: { certs: [cert()], module: env.module, provider: env.provider }
       });
 
       // assert
@@ -94,6 +93,7 @@ describe('HttpRequestExecutor', () => {
         concurrency: 6,
         pkcs11: {
           certs: [cert({ maxConcurrency: 2 })],
+          module: env.module,
           provider: env.provider
         }
       });
@@ -112,6 +112,7 @@ describe('HttpRequestExecutor', () => {
         urls: urls(5),
         pkcs11: {
           certs: [cert({ cert: join(env.pkiDir, 'client.pem') })],
+          module: env.module,
           provider: env.provider
         }
       });
@@ -128,6 +129,7 @@ describe('HttpRequestExecutor', () => {
         urls: urls(5),
         pkcs11: {
           certs: [cert({ pinEnv: 'WRONG_PIN' })],
+          module: env.module,
           provider: env.provider
         }
       });
@@ -146,6 +148,7 @@ describe('HttpRequestExecutor', () => {
         urls: urls(1),
         pkcs11: {
           certs: [cert({ token: 'missing' })],
+          module: env.module,
           provider: env.provider
         }
       });
@@ -166,6 +169,7 @@ describe('HttpRequestExecutor', () => {
         concurrency: 2,
         pkcs11: {
           certs: [cert(), cert({ hostname: '127.0.0.1' })],
+          module: env.module,
           provider: env.provider
         }
       });

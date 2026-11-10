@@ -32,7 +32,6 @@ describe('Pkcs11CertParser', () => {
       // arrange
       const entry = JSON.stringify({
         hostname: 'example.com',
-        module,
         pinFile
       });
 
@@ -44,7 +43,6 @@ describe('Pkcs11CertParser', () => {
         {
           hostname: 'example.com',
           port: undefined,
-          module,
           pinFile,
           token: undefined,
           object: undefined,
@@ -60,7 +58,6 @@ describe('Pkcs11CertParser', () => {
       const entry = {
         hostname: '*.example.com',
         port: 8443,
-        module,
         pinEnv: 'CARD_PIN',
         token: 'Alice PIV',
         object: 'tls-client',
@@ -79,7 +76,6 @@ describe('Pkcs11CertParser', () => {
         {
           hostname: '*.example.com',
           port: '8443',
-          module,
           pinEnv: 'CARD_PIN',
           token: 'Alice PIV',
           object: 'tls-client',
@@ -94,7 +90,6 @@ describe('Pkcs11CertParser', () => {
       // act
       const result = Pkcs11CertParser.parse({
         hostname: 'example.com',
-        module,
         pinFile
       });
 
@@ -107,8 +102,8 @@ describe('Pkcs11CertParser', () => {
     it('should expand a JSON array string, as an environment variable supplies several entries', () => {
       // arrange
       const value = JSON.stringify([
-        { hostname: 'a.example.com', module, pinFile },
-        { hostname: 'b.example.com', module, pinFile }
+        { hostname: 'a.example.com', pinFile },
+        { hostname: 'b.example.com', pinFile }
       ]);
 
       // act
@@ -121,132 +116,76 @@ describe('Pkcs11CertParser', () => {
       ]);
     });
 
-    it('should use the default module when the entry has none', () => {
-      // act
-      const [result]: Pkcs11Cert[] = Pkcs11CertParser.parse(
-        [{ hostname: 'example.com', pinFile }],
-        { defaultModule: module }
-      );
-
-      // assert
-      expect(result.module).toBe(module);
-    });
-
-    it('should prefer the module of the entry over the default module', () => {
-      // arrange
-      const other = join(dir, 'other-pkcs11.so');
-      writeFileSync(other, '');
-
-      // act
-      const [result]: Pkcs11Cert[] = Pkcs11CertParser.parse(
-        [{ hostname: 'example.com', module: other, pinFile }],
-        { defaultModule: module }
-      );
-
-      // assert
-      expect(result.module).toBe(other);
-    });
-
-    it('should reject entries that use different modules', () => {
-      // arrange
-      const other = join(dir, 'other-pkcs11.so');
-      writeFileSync(other, '');
-
-      // act
-      const act = () =>
-        Pkcs11CertParser.parse([
-          { hostname: 'a.com', module, pinFile },
-          { hostname: 'b.com', module: other, pinFile }
-        ]);
-
-      // assert
-      expect(act).toThrow(
-        `Option --pkcs11-cert: all entries must use the same "module"; found ${module}, ${other}.`
-      );
-    });
-
     it('should resolve relative paths to absolute ones', () => {
       // act
       const [result]: Pkcs11Cert[] = Pkcs11CertParser.parse([
         {
           hostname: 'example.com',
-          module: relative(process.cwd(), module),
           pinFile: relative(process.cwd(), pinFile),
           cert: relative(process.cwd(), certFile)
         }
       ]);
 
       // assert
-      expect(result).toMatchObject({ module, pinFile, cert: certFile });
+      expect(result).toMatchObject({ pinFile, cert: certFile });
     });
 
     it.each([
-      ['no hostname', { module, pinFile }, /#1: specify "hostname"/],
+      ['no hostname', { pinFile }, /#1: specify "hostname"/],
+      [
+        'a per-entry module',
+        { hostname: 'example.com', module: '/opt/vendor.so', pinFile },
+        /"module" is not a per-certificate field.*--pkcs11-module/
+      ],
       [
         'a blank hostname',
-        { hostname: '  ', module, pinFile },
+        { hostname: '  ', pinFile },
         /"hostname" must be a non-empty string/
       ],
       [
-        'no module and no default module',
-        { hostname: 'example.com', pinFile },
-        /#1 \(hostname "example.com"\): specify "module"/
-      ],
-      [
         'no PIN source',
-        { hostname: 'example.com', module },
+        { hostname: 'example.com' },
         /exactly one of "pinFile" or "pinEnv"/
       ],
       [
         'two PIN sources',
-        { hostname: 'example.com', module, pinFile, pinEnv: 'CARD_PIN' },
+        { hostname: 'example.com', pinFile, pinEnv: 'CARD_PIN' },
         /exactly one of "pinFile" or "pinEnv"/
       ],
       [
         'a literal PIN',
-        { hostname: 'example.com', module, pinFile, pin: '1234' },
+        { hostname: 'example.com', pinFile, pin: '1234' },
         /literal "pin" is not accepted/
       ],
       [
         'a misspelled field',
-        { hostname: 'example.com', module, pinFile, pinfile: 'x' },
+        { hostname: 'example.com', pinFile, pinfile: 'x' },
         /unknown field\(s\) "pinfile"/
       ],
       [
         'an unset PIN variable',
-        { hostname: 'example.com', module, pinEnv: 'MISSING_PIN' },
+        { hostname: 'example.com', pinEnv: 'MISSING_PIN' },
         /environment variable MISSING_PIN referenced by "pinEnv" is not set/
       ],
       [
         'a PIN variable read by bright-cli itself',
-        { hostname: 'example.com', module, pinEnv: 'REPEATER_CARD_PIN' },
+        { hostname: 'example.com', pinEnv: 'REPEATER_CARD_PIN' },
         /starts with "REPEATER"/
       ],
       [
         'a PIN variable read by bright-cli without an underscore',
-        { hostname: 'example.com', module, pinEnv: 'REPEATERPIN' },
+        { hostname: 'example.com', pinEnv: 'REPEATERPIN' },
         /starts with "REPEATER"/
       ],
       [
-        'a missing module file',
-        { hostname: 'example.com', module: join(dir, 'nope.so'), pinFile },
-        /"module" .* does not exist/
-      ],
-      [
-        'a module path that is a directory',
-        { hostname: 'example.com', module: dir, pinFile },
-        /"module" .* is not a file/
-      ],
-      [
         'a missing PIN file',
-        { hostname: 'example.com', module, pinFile: join(dir, 'nope.pin') },
+        { hostname: 'example.com', pinFile: join(dir, 'nope.pin') },
         /"pinFile" .* does not exist/
       ],
       [
         'a missing cert file',
         {
           hostname: 'example.com',
-          module,
           pinFile,
           cert: join(dir, 'nope.pem')
         },
@@ -254,32 +193,32 @@ describe('Pkcs11CertParser', () => {
       ],
       [
         'port 0',
-        { hostname: 'example.com', module, pinFile, port: 0 },
+        { hostname: 'example.com', pinFile, port: 0 },
         /"port" must be/
       ],
       [
         'a non-numeric port',
-        { hostname: 'example.com', module, pinFile, port: 'abc' },
+        { hostname: 'example.com', pinFile, port: 'abc' },
         /"port" must be/
       ],
       [
         'a non-hex id',
-        { hostname: 'example.com', module, pinFile, id: 'xyz' },
+        { hostname: 'example.com', pinFile, id: 'xyz' },
         /"id" must be a hex/
       ],
       [
         'an odd-length id',
-        { hostname: 'example.com', module, pinFile, id: 'abc' },
+        { hostname: 'example.com', pinFile, id: 'abc' },
         /"id" must be a hex/
       ],
       [
         'maxConcurrency 0',
-        { hostname: 'example.com', module, pinFile, maxConcurrency: 0 },
+        { hostname: 'example.com', pinFile, maxConcurrency: 0 },
         /"maxConcurrency" must be an integer/
       ],
       [
         'a fractional maxConcurrency',
-        { hostname: 'example.com', module, pinFile, maxConcurrency: 1.5 },
+        { hostname: 'example.com', pinFile, maxConcurrency: 1.5 },
         /"maxConcurrency" must be an integer/
       ]
     ])('should reject an entry with %s', (_case, entry, message) => {
@@ -293,9 +232,7 @@ describe('Pkcs11CertParser', () => {
     it('should reject a PIN typed into "pinEnv" without repeating it', () => {
       // act
       const act = () =>
-        Pkcs11CertParser.parse([
-          { hostname: 'example.com', module, pinEnv: '483920' }
-        ]);
+        Pkcs11CertParser.parse([{ hostname: 'example.com', pinEnv: '483920' }]);
 
       // assert
       expect(act).toThrow(/must be the name of an environment variable/);
@@ -306,7 +243,7 @@ describe('Pkcs11CertParser', () => {
       // act
       const act = () =>
         Pkcs11CertParser.parse(
-          [{ hostname: 'example.com', module, pinEnv: 'CARD_PIN' }],
+          [{ hostname: 'example.com', pinEnv: 'CARD_PIN' }],
           { env: { CARD_PIN: '1234' }, daemon: true }
         );
 
@@ -321,8 +258,7 @@ describe('Pkcs11CertParser', () => {
           [
             {
               hostname: 'example.com',
-              module: relative(process.cwd(), module),
-              pinFile
+              pinFile: relative(process.cwd(), pinFile)
             }
           ],
           { daemon: true }
@@ -330,14 +266,14 @@ describe('Pkcs11CertParser', () => {
 
       // assert
       expect(act).toThrow(
-        /"module" .* must be an absolute path when installing the daemon/
+        /"pinFile" .* must be an absolute path when installing the daemon/
       );
     });
 
     it('should accept absolute paths when installing the daemon', () => {
       // act
       const result = Pkcs11CertParser.parse(
-        [{ hostname: 'example.com', module, pinFile, cert: certFile }],
+        [{ hostname: 'example.com', pinFile, cert: certFile }],
         { daemon: true }
       );
 
@@ -364,8 +300,8 @@ describe('Pkcs11CertParser', () => {
     it('should name the position of the failing entry', () => {
       // arrange
       const entries = [
-        { hostname: 'a.example.com', module, pinFile },
-        { hostname: 'b.example.com', pinFile }
+        { hostname: 'a.example.com', pinFile },
+        { hostname: 'b.example.com' }
       ];
 
       // act
@@ -388,7 +324,7 @@ describe('Pkcs11CertParser', () => {
         // act
         const act = () =>
           Pkcs11CertParser.parse([
-            { hostname: 'example.com', module, pinFile: unreadable }
+            { hostname: 'example.com', pinFile: unreadable }
           ]);
 
         // assert
@@ -420,6 +356,17 @@ describe('Pkcs11CertParser', () => {
       // assert
       expect(act).toThrow(
         /^Option --pkcs11-provider .*missing\.so does not exist or is not a file\.$/
+      );
+    });
+
+    it('should reject a directory', () => {
+      // act
+      const act = () =>
+        Pkcs11CertParser.resolveFile(dir, 'Option --pkcs11-module');
+
+      // assert
+      expect(act).toThrow(
+        `Option --pkcs11-module ${dir} does not exist or is not a file.`
       );
     });
   });

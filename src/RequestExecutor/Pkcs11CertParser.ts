@@ -3,7 +3,6 @@ import { accessSync, constants, Stats, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 
 export interface Pkcs11CertParserOptions {
-  defaultModule?: string;
   env?: NodeJS.ProcessEnv;
   /** The entries are about to be written into a daemon service definition. */
   daemon?: boolean;
@@ -15,7 +14,6 @@ export class Pkcs11CertParser {
   private static readonly KNOWN_FIELDS: ReadonlySet<string> = new Set([
     'hostname',
     'port',
-    'module',
     'pinFile',
     'pinEnv',
     'token',
@@ -38,16 +36,12 @@ export class Pkcs11CertParser {
    */
   public static parse(
     entries: unknown,
-    {
-      defaultModule,
-      env = process.env,
-      daemon = false
-    }: Pkcs11CertParserOptions = {}
+    { env = process.env, daemon = false }: Pkcs11CertParserOptions = {}
   ): Pkcs11Cert[] {
-    const certs = Pkcs11CertParser.expand(entries).map(
+    return Pkcs11CertParser.expand(entries).map(
       (raw: RawEntry, index: number) => {
         try {
-          return Pkcs11CertParser.toDescriptor(raw, defaultModule, env, daemon);
+          return Pkcs11CertParser.toDescriptor(raw, env, daemon);
         } catch (e) {
           throw new Error(
             `Option --pkcs11-cert #${index + 1}${Pkcs11CertParser.describeHost(
@@ -57,19 +51,6 @@ export class Pkcs11CertParser {
         }
       }
     );
-    const modules = new Set(certs.map(({ module }: Pkcs11Cert) => module));
-
-    // The OpenSSL providers can be loaded only once per process, under their
-    // own fixed name, and each instance drives a single vendor module.
-    if (modules.size > 1) {
-      throw new Error(
-        `Option --pkcs11-cert: all entries must use the same "module"; found ${[
-          ...modules
-        ].join(', ')}.`
-      );
-    }
-
-    return certs;
   }
 
   /**
@@ -157,7 +138,6 @@ export class Pkcs11CertParser {
 
   private static toDescriptor(
     raw: RawEntry,
-    defaultModule: string | undefined,
     env: NodeJS.ProcessEnv,
     daemon: boolean
   ): Pkcs11Cert {
@@ -173,7 +153,6 @@ export class Pkcs11CertParser {
     return {
       hostname,
       port: Pkcs11CertParser.port(raw),
-      module: Pkcs11CertParser.module(raw, defaultModule, daemon),
       ...Pkcs11CertParser.pinSource(raw, env, daemon),
       token: Pkcs11CertParser.optionalString(raw, 'token'),
       object: Pkcs11CertParser.optionalString(raw, 'object'),
@@ -187,6 +166,12 @@ export class Pkcs11CertParser {
     if ('pin' in raw) {
       throw new Error(
         'a literal "pin" is not accepted, because it would be stored in the process arguments and the daemon service definition. Use "pinFile" or "pinEnv".'
+      );
+    }
+
+    if ('module' in raw) {
+      throw new Error(
+        '"module" is not a per-certificate field: all certificates share one PKCS#11 library. Set it once with --pkcs11-module.'
       );
     }
 
@@ -235,23 +220,6 @@ export class Pkcs11CertParser {
     }
 
     return port;
-  }
-
-  private static module(
-    raw: RawEntry,
-    defaultModule: string | undefined,
-    daemon: boolean
-  ): string {
-    const module =
-      Pkcs11CertParser.optionalString(raw, 'module') ?? defaultModule;
-
-    if (!module) {
-      throw new Error(
-        'specify "module" (path to the PKCS#11 library of the card vendor) or set --pkcs11-module.'
-      );
-    }
-
-    return Pkcs11CertParser.resolveFile(module, '"module"', daemon);
   }
 
   private static pinSource(

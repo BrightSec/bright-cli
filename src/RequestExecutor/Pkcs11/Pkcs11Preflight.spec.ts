@@ -85,7 +85,6 @@ const fakeModule = ({
 
 const descriptor = (overrides: Partial<Pkcs11Cert> = {}): Pkcs11Cert => ({
   hostname: 'example.com',
-  module: MODULE,
   pinEnv: 'CARD_PIN',
   cert: 'token',
   maxConcurrency: 1,
@@ -93,6 +92,7 @@ const descriptor = (overrides: Partial<Pkcs11Cert> = {}): Pkcs11Cert => ({
 });
 
 describe('Pkcs11Preflight', () => {
+  const target = { module: MODULE, provider: 'pkcs11prov' };
   const env = { CARD_PIN: PIN };
 
   const create = (
@@ -106,7 +106,7 @@ describe('Pkcs11Preflight', () => {
 
     return {
       loader,
-      preflight: new Pkcs11Preflight(loader, 'pkcs11prov', {
+      preflight: new Pkcs11Preflight(loader, target, {
         env,
         retryAfterMs: 1000,
         ...options
@@ -282,7 +282,9 @@ describe('Pkcs11Preflight', () => {
           throw error;
         })
       };
-      const preflight = new Pkcs11Preflight(loader, 'pkcs11prov', { env });
+      const preflight = new Pkcs11Preflight(loader, target, {
+        env
+      });
 
       // act
       const result = preflight.identity(descriptor());
@@ -430,7 +432,9 @@ describe('Pkcs11Preflight', () => {
           );
         })
       };
-      const preflight = new Pkcs11Preflight(loader, 'pkcs11prov', { env });
+      const preflight = new Pkcs11Preflight(loader, target, {
+        env
+      });
 
       // act
       const result = preflight.identity(descriptor());

@@ -24,6 +24,13 @@ export interface Pkcs11Identity {
   tls12Only: boolean;
 }
 
+export interface Pkcs11PreflightTarget {
+  /** Path of the vendor PKCS#11 library. */
+  module: string;
+  /** OpenSSL provider name for CURLOPT_SSLENGINE. */
+  provider: string;
+}
+
 export interface Pkcs11PreflightOptions {
   retryAfterMs?: number;
   now?: () => number;
@@ -75,13 +82,13 @@ export class Pkcs11Preflight {
   private readonly inflight = new Map<Pkcs11Cert, Promise<Pkcs11Identity>>();
   private readonly identities = new Map<Pkcs11Cert, Pkcs11Identity>();
   private readonly failures = new Map<Pkcs11Cert, StoredFailure>();
-  // Keyed by module and token: certificates on the same card share one login,
+  // Keyed by token: certificates on the same card share one login,
   // so a rejected PIN is never tried again through another entry.
   private readonly logins = new Map<string, Login | Pkcs11Error>();
 
   constructor(
     private readonly loader: Pkcs11ModuleLoader,
-    private readonly provider: string,
+    private readonly target: Pkcs11PreflightTarget,
     {
       retryAfterMs = 30_000,
       now = Date.now,
@@ -171,7 +178,7 @@ export class Pkcs11Preflight {
     }
 
     return {
-      provider: this.provider,
+      provider: this.target.provider,
       keyUri: Pkcs11Uri.build({
         token: token.label,
         serial: token.serial,
@@ -195,9 +202,9 @@ export class Pkcs11Preflight {
   }
 
   private login(cert: Pkcs11Cert): Login {
-    const module = this.loadModule(cert);
+    const module = this.loadModule();
     const token = this.selectToken(module, cert);
-    const key = `${cert.module}\0${token.serial}\0${token.label}`;
+    const key = `${token.serial}\0${token.label}`;
     const previous = this.logins.get(key);
 
     if (previous instanceof Pkcs11Error) {
@@ -321,9 +328,9 @@ export class Pkcs11Preflight {
     );
   }
 
-  private loadModule(cert: Pkcs11Cert): Pkcs11Module {
+  private loadModule(): Pkcs11Module {
     try {
-      return this.loader.load(cert.module);
+      return this.loader.load(this.target.module);
     } catch (e) {
       if (e instanceof Pkcs11Error) {
         throw e;
@@ -331,7 +338,7 @@ export class Pkcs11Preflight {
 
       throw new Pkcs11Error(
         Pkcs11ErrorCode.MODULE_LOAD_FAILED,
-        `Cannot load the PKCS#11 module ${cert.module}: ${e?.message}`,
+        `Cannot load the PKCS#11 module ${this.target.module}: ${e?.message}`,
         true
       );
     }

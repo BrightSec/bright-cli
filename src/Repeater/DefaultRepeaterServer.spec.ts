@@ -282,6 +282,34 @@ describe('DefaultRepeaterServer', () => {
       expect(capturedTags[0]).toEqual({ trace_id: 'trace-abc12345' });
     });
 
+    it('tags the per-request Sentry scope with the attribution ids the request carries', async () => {
+      // arrange
+      server.on(RepeaterServerEvents.REQUEST, () => {
+        throw new Error('boom');
+      });
+      await connect();
+
+      // act
+      emitRequest({
+        protocol: 'http',
+        url: 'http://target.test/',
+        traceId: 'trace-abc12345',
+        entrypointId: 'bEgigzxPai9A1hpkbYDp6i',
+        scanId: '7xKq2mWnRtYvZ8cHdJfL3s',
+        discoveryId: ''
+      });
+      await Promise.resolve();
+
+      // assert
+      expect(capturedTags).toEqual([
+        {
+          trace_id: 'trace-abc12345',
+          entrypoint_id: 'bEgigzxPai9A1hpkbYDp6i',
+          scan_id: '7xKq2mWnRtYvZ8cHdJfL3s'
+        }
+      ]);
+    });
+
     it('does not tag trace_id when the request carries none', async () => {
       // arrange
       server.on(RepeaterServerEvents.REQUEST, () => {

@@ -324,17 +324,23 @@ export class DefaultRepeaterServer implements RepeaterServer {
     handler: (...payload: TArgs) => unknown,
     ...args: unknown[]
   ) {
-    // Fork a Sentry scope per dispatched event so a per-request `trace_id` tag
-    // applies ONLY to this forward's capture — a global `setTag` would
+    // Fork a Sentry scope per dispatched event so the per-request tags apply
+    // ONLY to this forward's capture — a global `setTag` would
     // cross-contaminate concurrent forwards. The scope wraps the whole try/catch
     // so it also encloses the capture in `handleEventError`.
     return withScope(async (scope) => {
       if (event === RepeaterServerEvents.REQUEST) {
-        const traceId = (args[0] as RepeaterServerRequestEvent | undefined)
-          ?.traceId;
-        if (traceId) {
-          scope.setTag('trace_id', traceId);
-        }
+        const request = args[0] as RepeaterServerRequestEvent | undefined;
+        Object.entries({
+          trace_id: request?.traceId,
+          entrypoint_id: request?.entrypointId,
+          scan_id: request?.scanId,
+          discovery_id: request?.discoveryId
+        })
+          .filter(([, value]: [string, string | undefined]) => !!value)
+          .forEach(([name, value]: [string, string]) =>
+            scope.setTag(name, value)
+          );
       }
 
       try {

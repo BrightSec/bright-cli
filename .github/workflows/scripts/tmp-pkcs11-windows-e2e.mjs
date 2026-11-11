@@ -15,7 +15,9 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-const TARGET_HOST = 'ao-https-mtls-pkcs11.nlb.brokencrystals.nexploit.app';
+// A dedicated instance (Helm release ao-https-mtls-win-e2e, built-in
+// MyCompany Root CA): the manual checks reconfigure ao-https-mtls-pkcs11.
+const TARGET_HOST = 'ao-https-mtls-win-e2e.nlb.brokencrystals.nexploit.app';
 const TARGET_URL = `https://${TARGET_HOST}/`;
 const TOKEN_LABEL = 'bright-remote';
 const P12_PASSWORD = '1234';

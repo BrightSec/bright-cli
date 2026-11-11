@@ -262,7 +262,7 @@ describe('DefaultRepeaterServer', () => {
         () => undefined
       );
 
-    it('tags the per-request Sentry scope with trace_id when the request carries one', async () => {
+    it('should tag the per-request Sentry scope with trace_id when the request carries one', async () => {
       // arrange — a handler that throws so handleEventError captures inside scope
       server.on(RepeaterServerEvents.REQUEST, () => {
         throw new Error('boom');
@@ -282,7 +282,7 @@ describe('DefaultRepeaterServer', () => {
       expect(capturedTags[0]).toEqual({ trace_id: 'trace-abc12345' });
     });
 
-    it('tags the per-request Sentry scope with the attribution ids the request carries', async () => {
+    it('should tag the per-request Sentry scope with the attribution ids the request carries', async () => {
       // arrange
       server.on(RepeaterServerEvents.REQUEST, () => {
         throw new Error('boom');
@@ -310,7 +310,7 @@ describe('DefaultRepeaterServer', () => {
       ]);
     });
 
-    it('does not tag trace_id when the request carries none', async () => {
+    it('should not tag trace_id when the request carries none', async () => {
       // arrange
       server.on(RepeaterServerEvents.REQUEST, () => {
         throw new Error('boom');
@@ -326,7 +326,7 @@ describe('DefaultRepeaterServer', () => {
       expect(capturedTags[0]).not.toHaveProperty('trace_id');
     });
 
-    it('does not cross-contaminate trace_id tags across two requests', async () => {
+    it('should not cross-contaminate trace_id tags across two requests', async () => {
       // arrange
       server.on(RepeaterServerEvents.REQUEST, () => {
         throw new Error('boom');

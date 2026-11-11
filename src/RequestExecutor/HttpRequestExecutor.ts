@@ -581,15 +581,19 @@ export class HttpRequestExecutor implements RequestExecutor {
       return script;
     }
 
+    // The string view of a binary body is lossy, so an untouched body is
+    // restored from the original instead.
+    const decodedBody = script.encoding
+      ? iconv.encode(script.body, script.encoding).toString()
+      : script.body;
+
     const result = await vm.exec<ScriptEntrypoint>(
       this.DEFAULT_SCRIPT_ENTRYPOINT,
       {
         url: script.url,
         method: script.method,
         headers: script.headers,
-        body: script.encoding
-          ? iconv.encode(script.body, script.encoding)
-          : script.body
+        body: decodedBody
       }
     );
 
@@ -598,14 +602,22 @@ export class HttpRequestExecutor implements RequestExecutor {
       url: result.url,
       method: result.method,
       headers: result.headers,
-      // A script runs in its own realm, so its bytes fail `instanceof`.
-      ...(isUint8Array(result.body)
-        ? {
-            body: Buffer.from(result.body).toString('base64'),
-            encoding: 'base64'
-          }
-        : { body: result.body, encoding: undefined })
+      ...this.scriptBody(result.body, decodedBody)
     });
+  }
+
+  private scriptBody(
+    body: ScriptRequest['body'],
+    decodedBody: string | undefined
+  ): Pick<RequestOptions, 'body' | 'encoding'> {
+    if (body === decodedBody) {
+      return {};
+    }
+
+    // A script runs in its own realm, so its bytes fail `instanceof`.
+    return isUint8Array(body)
+      ? { body: Buffer.from(body).toString('base64'), encoding: 'base64' }
+      : { body, encoding: undefined };
   }
 
   private async handleResponseScript(

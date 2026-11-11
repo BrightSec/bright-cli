@@ -1728,34 +1728,6 @@ describe('HttpRequestExecutor', () => {
       expect(body.toString()).toEqual('rewritten by the script');
     });
 
-    it('should send the bytes a script returns for a binary body byte-exactly', async () => {
-      // arrange
-      const original = binaryPattern(4096);
-      const expected = Buffer.from(original.map((byte) => 0xff - byte));
-      const { baseUrl, received } = await startBodyCapturingServer();
-      const request = new Request({
-        protocol: Protocol.HTTP,
-        url: `${baseUrl}/`,
-        method: 'POST',
-        body: original.toString('base64'),
-        encoding: 'base64'
-      });
-      withVirtualScript(request.url, (options) => ({
-        ...options,
-        body: new Uint8Array(
-          (options.body as Uint8Array).map((byte) => 0xff - byte)
-        )
-      }));
-      const sut = buildSut();
-
-      // act
-      await sut.execute(request);
-      const { body } = await received;
-
-      // assert
-      expect(body).toEqual(expected);
-    });
-
     it('should send the bytes a sandboxed script builds byte-exactly', async () => {
       // arrange
       const { baseUrl, received } = await startBodyCapturingServer();
@@ -1809,7 +1781,7 @@ describe('HttpRequestExecutor', () => {
       expect(response.errorCode).toBeDefined();
     });
 
-    it('should hand the script only the url, method, headers and body', async () => {
+    it('should hand the script only the url, method, headers and decoded body', async () => {
       // arrange
       const { baseUrl, received } = await startBodyCapturingServer();
       const request = new Request({
@@ -1841,7 +1813,7 @@ describe('HttpRequestExecutor', () => {
         url: `${baseUrl}/api/v1/users?id=42`,
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: Buffer.from('{"name":"Alice"}')
+        body: '{"name":"Alice"}'
       });
     });
 

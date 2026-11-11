@@ -125,7 +125,7 @@ export class RunRepeater implements CommandModule {
         boolean: true,
         default: false,
         describe:
-          'Send the entry point, scan and discovery IDs of each request to the --proxy-target proxy only, as X-Bright-Entry-Point-Id, X-Bright-Scan-Id and X-Bright-Discovery-Id headers'
+          'Send the entry point, scan and discovery IDs of each request to the --proxy-target proxy only, as X-Bright-Entrypoint-Id, X-Bright-Scan-Id and X-Bright-Discovery-Id headers'
       })
       .option('kerberos', {
         boolean: true,

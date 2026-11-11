@@ -124,7 +124,7 @@ async function startProxy(): Promise<{
   const server = http.createServer((req, res) => {
     requests.push(req.headers);
     const headers = { ...req.headers };
-    delete headers['x-bright-entry-point-id'];
+    delete headers['x-bright-entrypoint-id'];
     delete headers['x-bright-scan-id'];
     delete headers['x-bright-discovery-id'];
     const upstream = http.request(
@@ -2338,12 +2338,12 @@ describe('HttpRequestExecutor', () => {
   });
   describe('proxy target attribution', () => {
     const ids = {
-      entryPointId: 'ep-1',
+      entrypointId: 'ep-1',
       scanId: 'scan.2',
       discoveryId: 'disc_3'
     };
     const attribution = {
-      'x-bright-entry-point-id': 'ep-1',
+      'x-bright-entrypoint-id': 'ep-1',
       'x-bright-scan-id': 'scan.2',
       'x-bright-discovery-id': 'disc_3'
     };
@@ -2374,12 +2374,12 @@ describe('HttpRequestExecutor', () => {
       // assert
       expect(response.statusCode).toBe(200);
       expect(proxy.requests).toEqual([expect.objectContaining(attribution)]);
-      expect(target.received[0]).not.toHaveProperty('x-bright-entry-point-id');
+      expect(target.received[0]).not.toHaveProperty('x-bright-entrypoint-id');
       expect(target.received[0]).not.toHaveProperty('x-bright-scan-id');
       expect(target.received[0]).not.toHaveProperty('x-bright-discovery-id');
     });
 
-    it('should send only the ids that are valid', async () => {
+    it('should send only the ids that are present', async () => {
       // arrange
       const target = await startTarget();
       const proxy = await startProxy();
@@ -2389,9 +2389,8 @@ describe('HttpRequestExecutor', () => {
       });
       const { request } = createRequest({
         url: `${target.baseUrl}/`,
-        entryPointId: 'ep 1\r\nx-injected: 1',
-        scanId: 'scan.2',
-        discoveryId: 'x'.repeat(129)
+        entrypointId: '',
+        scanId: 'scan.2'
       });
 
       // act
@@ -2399,9 +2398,68 @@ describe('HttpRequestExecutor', () => {
 
       // assert
       expect(proxy.requests[0]).toMatchObject({ 'x-bright-scan-id': 'scan.2' });
-      expect(proxy.requests[0]).not.toHaveProperty('x-bright-entry-point-id');
+      expect(proxy.requests[0]).not.toHaveProperty('x-bright-entrypoint-id');
       expect(proxy.requests[0]).not.toHaveProperty('x-bright-discovery-id');
-      expect(proxy.requests[0]).not.toHaveProperty('x-injected');
+    });
+
+    it.each([
+      { name: 'returns a fresh object', handle: '({ ...req, headers: {} })' },
+      {
+        name: 'sets its own ids',
+        handle:
+          "({ ...req, entrypointId: 'forged', scanId: 'forged', discoveryId: 'forged' })"
+      }
+    ])(
+      'should keep the original ids when a request script $name',
+      async ({ handle }) => {
+        // arrange
+        const target = await startTarget();
+        const proxy = await startProxy();
+        const { hostname } = new URL(target.baseUrl);
+        const virtualScript = new VirtualScript(
+          hostname,
+          VirtualScriptType.LOCAL,
+          `module.exports.handle = (req) => ${handle};`
+        );
+        virtualScript.compile();
+        when(virtualScriptsMock.find(hostname)).thenReturn(virtualScript);
+        const sut = buildSut({
+          proxyUrl: proxy.proxyUrl,
+          proxyTargetAttribution: true
+        });
+        const request = new Request({
+          protocol: Protocol.HTTP,
+          url: `${target.baseUrl}/`,
+          ...ids
+        });
+
+        // act
+        await sut.execute(request);
+
+        // assert
+        expect(proxy.requests).toEqual([expect.objectContaining(attribution)]);
+      }
+    );
+
+    it('should keep the ids across a toJSON round-trip', async () => {
+      // arrange
+      const target = await startTarget();
+      const proxy = await startProxy();
+      const sut = buildSut({
+        proxyUrl: proxy.proxyUrl,
+        proxyTargetAttribution: true
+      });
+      const request = new Request({
+        protocol: Protocol.HTTP,
+        url: `${target.baseUrl}/`,
+        ...ids
+      });
+
+      // act
+      await sut.execute(new Request(request.toJSON()));
+
+      // assert
+      expect(proxy.requests).toEqual([expect.objectContaining(attribution)]);
     });
 
     it('should not send the ids to the proxy without the option', async () => {
@@ -2415,7 +2473,7 @@ describe('HttpRequestExecutor', () => {
       await sut.execute(request);
 
       // assert
-      expect(proxy.requests[0]).not.toHaveProperty('x-bright-entry-point-id');
+      expect(proxy.requests[0]).not.toHaveProperty('x-bright-entrypoint-id');
       expect(proxy.requests[0]).not.toHaveProperty('x-bright-scan-id');
       expect(proxy.requests[0]).not.toHaveProperty('x-bright-discovery-id');
     });
@@ -2443,7 +2501,7 @@ describe('HttpRequestExecutor', () => {
       // assert
       expect(response.statusCode).toBe(200);
       expect(proxy.requests).toEqual([]);
-      expect(target.received[0]).not.toHaveProperty('x-bright-entry-point-id');
+      expect(target.received[0]).not.toHaveProperty('x-bright-entrypoint-id');
       expect(target.received[0]).not.toHaveProperty('x-bright-scan-id');
       expect(target.received[0]).not.toHaveProperty('x-bright-discovery-id');
     });

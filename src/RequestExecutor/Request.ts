@@ -19,7 +19,7 @@ export interface RequestOptions {
   timeout?: number;
   decompress?: boolean;
   keepAlive?: boolean;
-  entryPointId?: string;
+  entrypointId?: string;
   scanId?: string;
   discoveryId?: string;
 }
@@ -58,7 +58,7 @@ export class Request {
   public readonly decompress?: boolean;
   public readonly timeout?: number;
   public readonly keepAlive?: boolean;
-  public readonly entryPointId?: string;
+  public readonly entrypointId?: string;
   public readonly scanId?: string;
   public readonly discoveryId?: string;
 
@@ -111,7 +111,7 @@ export class Request {
     decompress = true,
     headers = {},
     keepAlive,
-    entryPointId,
+    entrypointId,
     scanId,
     discoveryId
   }: RequestOptions) {
@@ -143,7 +143,7 @@ export class Request {
     this.maxContentSize = maxContentSize;
     this.decompress = !!decompress;
     this.keepAlive = keepAlive;
-    this.entryPointId = entryPointId;
+    this.entrypointId = entrypointId;
     this.scanId = scanId;
     this.discoveryId = discoveryId;
   }
@@ -218,7 +218,7 @@ export class Request {
       timeout: this.timeout,
       decompress: this.decompress,
       keepAlive: this.keepAlive,
-      entryPointId: this.entryPointId,
+      entrypointId: this.entrypointId,
       scanId: this.scanId,
       discoveryId: this.discoveryId
     };

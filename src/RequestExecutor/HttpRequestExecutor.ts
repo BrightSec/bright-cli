@@ -45,7 +45,6 @@ export class HttpRequestExecutor implements RequestExecutor {
   private readonly proxyDomainsBypass?: RegExp[];
   private readonly kerberosDomains?: RegExp[];
   private readonly sharedMulti = new Multi();
-  private readonly ATTRIBUTION_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 
   get protocol(): Protocol {
     return Protocol.HTTP;
@@ -412,13 +411,11 @@ export class HttpRequestExecutor implements RequestExecutor {
     if (!this.options.proxyTargetAttribution) return;
 
     const headers = Object.entries({
-      'X-Bright-Entry-Point-Id': options.entryPointId,
+      'X-Bright-Entrypoint-Id': options.entrypointId,
       'X-Bright-Scan-Id': options.scanId,
       'X-Bright-Discovery-Id': options.discoveryId
     })
-      .filter(([, value]: [string, string | undefined]) =>
-        this.ATTRIBUTION_ID_PATTERN.test(value ?? '')
-      )
+      .filter(([, value]: [string, string | undefined]) => !!value)
       .map(([name, value]: [string, string]) => `${name}: ${value}`);
 
     if (!headers.length) return;
@@ -602,10 +599,13 @@ export class HttpRequestExecutor implements RequestExecutor {
       ? iconv.encode(script.body, script.encoding).toString()
       : script.body;
 
+    const { entrypointId, scanId, discoveryId, ...options }: RequestOptions =
+      script.toJSON();
+
     const result = await vm.exec<ScriptEntrypoint>(
       this.DEFAULT_SCRIPT_ENTRYPOINT,
       {
-        ...script.toJSON(),
+        ...options,
         body: decodedBody,
         // The body handed to the script is already decoded, so reporting the
         // original `encoding` would describe it incorrectly. Every other option
@@ -623,11 +623,14 @@ export class HttpRequestExecutor implements RequestExecutor {
       !result?.encoding || result.encoding === script.encoding;
     const restoreOriginalBody = bodyUntouched && encodingUnchanged;
 
-    return new Request(
-      restoreOriginalBody
+    return new Request({
+      ...(restoreOriginalBody
         ? { ...result, body: script.body, encoding: script.encoding }
-        : result
-    );
+        : result),
+      entrypointId,
+      scanId,
+      discoveryId
+    });
   }
 
   private async handleResponseScript(

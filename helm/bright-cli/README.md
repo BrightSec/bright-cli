@@ -49,6 +49,26 @@ helm install bright-cli oci://ghcr.io/brightsec/bright-cli \
 
 > **Note**: When using `api.existingSecret.name`, the chart will not create its own secret and will reference the existing one instead. The `api.existingSecret.key` defaults to `token` if not specified.
 
+### Client Certificates on a Smart Card (PKCS#11)
+
+For HTTPS targets that require a client certificate whose private key is on a smart card, USB token or HSM, list the targets under `repeater.pkcs11.certs` and store the token PIN in a Secret:
+
+```bash
+kubectl create secret generic card-pin --from-file=pin=./pin.txt
+
+helm install bright-cli oci://ghcr.io/brightsec/bright-cli \
+--set api.existingSecret.name="my-bright-secret" \
+--set repeater.id="your-repeater-id" \
+--set 'repeater.pkcs11.certs[0].hostname=example.com' \
+--set repeater.pkcs11.pinSecret.name="card-pin" \
+--set repeater.pkcs11.pcscdSocketDir="/run/pcscd"
+```
+
+- Each entry of `repeater.pkcs11.certs` becomes one `--pkcs11-cert` option and accepts the same fields (`hostname`, `port`, `token`, `object`, `id`, `cert`, `maxConcurrency`). Entries without `pinFile` or `pinEnv` read the PIN from `repeater.pkcs11.pinSecret`.
+- `repeater.pkcs11.module` defaults to OpenSC (`/usr/lib/opensc-pkcs11.so`), which supports PIV and CAC cards. The image is Alpine Linux: a vendor module must be built for musl. Mount it with `repeater.extraVolumes` and `repeater.extraVolumeMounts`, and add the environment it needs with `repeater.extraEnv`.
+- A card reader attached to the node is reached through the node's `pcscd` socket. Run `pcscd` on the node, pin the pod to that node with `repeater.nodeSelector`, and set `repeater.pkcs11.pcscdSocketDir`. This mounts a `hostPath` volume, so the namespace's Pod Security level must allow it.
+- Use one replica per card: the Repeater logs in to the token once at startup. After a rejected PIN it stops using the token until it is restarted, so that the card is not locked.
+
 ## Upgrade the Chart
 
 If you need to upgrade the chart, you can use the following command:

@@ -16,6 +16,19 @@ npx ts-node tests/pkcs11/repeater-smoke.ts https://localhost:8443/ 200 -- \
   --pkcs11-cert "{\"hostname\":\"localhost\",\"port\":8443,\"pinFile\":\"$PWD/tests/pkcs11/.work/pin.txt\"}"
 ```
 
+## Check a remote mTLS target
+
+`remote/positive.sh` and `remote/negative.sh` put one client certificate on a throwaway SoftHSM2 token (not the `setup.sh` one) and send one request through the Repeater built from this checkout to a remote target that requires client certificates. `repeater-smoke.ts` stands in for the Bright cloud, so no API key is needed. Both need `npm ci && npm run build`, SoftHSM2, OpenSC and the OpenSSL PKCS#11 provider.
+
+```bash
+# Issued by a CA the target trusts: the request must get 200.
+tests/pkcs11/remote/positive.sh https://mtls.example.com/ client.p12 <p12 password>
+
+# A self-signed certificate (or pass a PKCS#12 from another CA): the target must
+# reject it in the TLS handshake, so the Repeater returns an errorCode and no status.
+tests/pkcs11/remote/negative.sh https://mtls.example.com/ [client.p12 <p12 password>]
+```
+
 ## Run on Linux (Docker)
 
 ```bash

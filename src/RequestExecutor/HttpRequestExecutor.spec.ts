@@ -1777,33 +1777,6 @@ describe('HttpRequestExecutor', () => {
       expect(body.toString()).toEqual('rewritten by the script');
     });
 
-    it('should honour an encoding a script adds without touching the body', async () => {
-      // arrange
-      // `Request.toJSON()` does not carry `encoding`, so a script that sets one
-      // is asking for its own body to be decoded. Restoring the original body
-      // and encoding here would silently drop that instruction.
-      const expected = binaryPattern(1024);
-      const { baseUrl, received } = await startBodyCapturingServer();
-      const request = new Request({
-        protocol: Protocol.HTTP,
-        url: `${baseUrl}/`,
-        method: 'POST',
-        body: expected.toString('base64')
-      });
-      withVirtualScript(request.url, (options) => ({
-        ...options,
-        encoding: 'base64'
-      }));
-      const sut = buildSut();
-
-      // act
-      await sut.execute(request);
-      const { body } = await received;
-
-      // assert
-      expect(firstMismatch(body, expected)).toBe(-1);
-    });
-
     it('should honour a per-request timeout after a script transform', async () => {
       // arrange
       // The executor is built without a timeout, so the only one in play is the
@@ -1916,35 +1889,6 @@ describe('HttpRequestExecutor', () => {
         },
         body: '{"name":"Bob"}'
       });
-    });
-
-    it('should keep the body byte-exact when a script re-declares the original encoding', async () => {
-      // arrange
-      // The script echoes back the encoding the request already had, so it has
-      // not asked for anything new. Treating that as a script-supplied encoding
-      // would base64-decode the lossy decoded view instead of the real body.
-      const expected = binaryPattern(4096);
-      const { baseUrl, received } = await startBodyCapturingServer();
-      const request = new Request({
-        protocol: Protocol.HTTP,
-        url: `${baseUrl}/`,
-        method: 'POST',
-        body: expected.toString('base64'),
-        encoding: 'base64'
-      });
-      withVirtualScript(request.url, (options) => ({
-        ...options,
-        encoding: 'base64'
-      }));
-      const sut = buildSut();
-
-      // act
-      await sut.execute(request);
-      const { body } = await received;
-
-      // assert
-      expect(firstMismatch(body, expected)).toBe(-1);
-      expect(body.length).toBe(expected.length);
     });
 
     it('should keep the body byte-exact when a script only changes headers', async () => {

@@ -2338,14 +2338,14 @@ describe('HttpRequestExecutor', () => {
   });
   describe('proxy target attribution', () => {
     const ids = {
-      entrypointId: 'ep-1',
-      scanId: 'scan.2',
-      discoveryId: 'disc_3'
+      entrypointId: 'bEgigzxPai9A1hpkbYDp6i',
+      scanId: 'tUv3ZqXo8mWkR5sJfHa2Lc',
+      discoveryId: 'qR7nKpW2xYd9sMfBc4TzVe'
     };
     const attribution = {
-      'x-bright-entrypoint-id': 'ep-1',
-      'x-bright-scan-id': 'scan.2',
-      'x-bright-discovery-id': 'disc_3'
+      'x-bright-entrypoint-id': 'bEgigzxPai9A1hpkbYDp6i',
+      'x-bright-scan-id': 'tUv3ZqXo8mWkR5sJfHa2Lc',
+      'x-bright-discovery-id': 'qR7nKpW2xYd9sMfBc4TzVe'
     };
 
     const plain = {
@@ -2402,7 +2402,7 @@ describe('HttpRequestExecutor', () => {
       const { request } = createRequest({
         url: `${target.baseUrl}/`,
         entrypointId: '',
-        scanId: 'scan.2'
+        scanId: 'tUv3ZqXo8mWkR5sJfHa2Lc'
       });
 
       // act
@@ -2410,7 +2410,7 @@ describe('HttpRequestExecutor', () => {
 
       // assert
       expect(proxy.requests).toEqual([
-        { ...proxied, 'x-bright-scan-id': 'scan.2' }
+        { ...proxied, 'x-bright-scan-id': 'tUv3ZqXo8mWkR5sJfHa2Lc' }
       ]);
     });
 
@@ -2419,7 +2419,7 @@ describe('HttpRequestExecutor', () => {
       {
         name: 'sets its own ids',
         handle:
-          "({ ...req, entrypointId: 'forged', scanId: 'forged', discoveryId: 'forged' })"
+          "({ ...req, entrypointId: 'hJ6wNcQ8vTm3pXrKz5GbAd', scanId: 'hJ6wNcQ8vTm3pXrKz5GbAd', discoveryId: 'hJ6wNcQ8vTm3pXrKz5GbAd' })"
       }
     ])(
       'should keep the original ids when a request script $name',

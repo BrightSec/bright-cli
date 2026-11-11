@@ -2433,15 +2433,9 @@ describe('HttpRequestExecutor', () => {
       const response = await sut.execute(request);
 
       // assert
-      expect({
-        statusCode: response.statusCode,
-        proxy: proxy.requests,
-        target: target.received
-      }).toEqual({
-        statusCode: 200,
-        proxy: [{ ...proxied, ...attribution }],
-        target: [proxied]
-      });
+      expect(response.statusCode).toBe(200);
+      expect(proxy.requests).toEqual([{ ...proxied, ...attribution }]);
+      expect(target.received).toEqual([proxied]);
     });
 
     it('should send only the ids that are present', async () => {
@@ -2526,10 +2520,8 @@ describe('HttpRequestExecutor', () => {
       await sut.execute(copy);
 
       // assert
-      expect({ copy, proxy: proxy.requests }).toEqual({
-        copy: request,
-        proxy: [{ ...proxied, ...attribution }]
-      });
+      expect(copy).toEqual(request);
+      expect(proxy.requests).toEqual([{ ...proxied, ...attribution }]);
     });
 
     it('should not send the ids to the proxy without the option', async () => {
@@ -2567,11 +2559,9 @@ describe('HttpRequestExecutor', () => {
       const response = await sut.execute(request);
 
       // assert
-      expect({
-        statusCode: response.statusCode,
-        proxy: proxy.requests,
-        target: target.received
-      }).toEqual({ statusCode: 200, proxy: [], target: [plain] });
+      expect(response.statusCode).toBe(200);
+      expect(proxy.requests).toEqual([]);
+      expect(target.received).toEqual([plain]);
     });
 
     it('should send the ids only on CONNECT for an https target', async () => {
@@ -2602,21 +2592,15 @@ describe('HttpRequestExecutor', () => {
         await sut.execute(request);
 
         // assert
-        expect({
-          connects: proxy.connects,
-          requests: proxy.requests,
-          tunnelStartsWithTlsHandshake: tunneled[0]?.[0] === 0x16
-        }).toEqual({
-          connects: [
-            {
-              'host': `127.0.0.1:${port}`,
-              'proxy-connection': 'Keep-Alive',
-              ...attribution
-            }
-          ],
-          requests: [],
-          tunnelStartsWithTlsHandshake: true
-        });
+        expect(proxy.connects).toEqual([
+          {
+            'host': `127.0.0.1:${port}`,
+            'proxy-connection': 'Keep-Alive',
+            ...attribution
+          }
+        ]);
+        expect(proxy.requests).toEqual([]);
+        expect(tunneled[0]?.[0]).toBe(0x16);
       } finally {
         target.close();
       }

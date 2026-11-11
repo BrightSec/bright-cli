@@ -2348,6 +2348,14 @@ describe('HttpRequestExecutor', () => {
       'x-bright-discovery-id': 'disc_3'
     };
 
+    const plain = {
+      'host': expect.any(String),
+      'accept': '*/*',
+      'accept-encoding': 'deflate, gzip, br, zstd',
+      'connection': 'close'
+    };
+    const proxied = { ...plain, 'proxy-connection': 'Keep-Alive' };
+
     const startTarget = async () => {
       const received: http.IncomingHttpHeaders[] = [];
       const { baseUrl } = await startServer((req, res) => {
@@ -2372,11 +2380,15 @@ describe('HttpRequestExecutor', () => {
       const response = await sut.execute(request);
 
       // assert
-      expect(response.statusCode).toBe(200);
-      expect(proxy.requests).toEqual([expect.objectContaining(attribution)]);
-      expect(target.received[0]).not.toHaveProperty('x-bright-entrypoint-id');
-      expect(target.received[0]).not.toHaveProperty('x-bright-scan-id');
-      expect(target.received[0]).not.toHaveProperty('x-bright-discovery-id');
+      expect({
+        statusCode: response.statusCode,
+        proxy: proxy.requests,
+        target: target.received
+      }).toEqual({
+        statusCode: 200,
+        proxy: [{ ...proxied, ...attribution }],
+        target: [proxied]
+      });
     });
 
     it('should send only the ids that are present', async () => {
@@ -2397,9 +2409,9 @@ describe('HttpRequestExecutor', () => {
       await sut.execute(request);
 
       // assert
-      expect(proxy.requests[0]).toMatchObject({ 'x-bright-scan-id': 'scan.2' });
-      expect(proxy.requests[0]).not.toHaveProperty('x-bright-entrypoint-id');
-      expect(proxy.requests[0]).not.toHaveProperty('x-bright-discovery-id');
+      expect(proxy.requests).toEqual([
+        { ...proxied, 'x-bright-scan-id': 'scan.2' }
+      ]);
     });
 
     it.each([
@@ -2437,7 +2449,7 @@ describe('HttpRequestExecutor', () => {
         await sut.execute(request);
 
         // assert
-        expect(proxy.requests).toEqual([expect.objectContaining(attribution)]);
+        expect(proxy.requests).toEqual([{ ...proxied, ...attribution }]);
       }
     );
 
@@ -2455,11 +2467,16 @@ describe('HttpRequestExecutor', () => {
         ...ids
       });
 
+      const copy = new Request(request.toJSON());
+
       // act
-      await sut.execute(new Request(request.toJSON()));
+      await sut.execute(copy);
 
       // assert
-      expect(proxy.requests).toEqual([expect.objectContaining(attribution)]);
+      expect({ copy, proxy: proxy.requests }).toEqual({
+        copy: request,
+        proxy: [{ ...proxied, ...attribution }]
+      });
     });
 
     it('should not send the ids to the proxy without the option', async () => {
@@ -2473,9 +2490,7 @@ describe('HttpRequestExecutor', () => {
       await sut.execute(request);
 
       // assert
-      expect(proxy.requests[0]).not.toHaveProperty('x-bright-entrypoint-id');
-      expect(proxy.requests[0]).not.toHaveProperty('x-bright-scan-id');
-      expect(proxy.requests[0]).not.toHaveProperty('x-bright-discovery-id');
+      expect(proxy.requests).toEqual([proxied]);
     });
 
     it.each([
@@ -2499,11 +2514,11 @@ describe('HttpRequestExecutor', () => {
       const response = await sut.execute(request);
 
       // assert
-      expect(response.statusCode).toBe(200);
-      expect(proxy.requests).toEqual([]);
-      expect(target.received[0]).not.toHaveProperty('x-bright-entrypoint-id');
-      expect(target.received[0]).not.toHaveProperty('x-bright-scan-id');
-      expect(target.received[0]).not.toHaveProperty('x-bright-discovery-id');
+      expect({
+        statusCode: response.statusCode,
+        proxy: proxy.requests,
+        target: target.received
+      }).toEqual({ statusCode: 200, proxy: [], target: [plain] });
     });
 
     it('should send the ids only on CONNECT for an https target', async () => {
@@ -2534,12 +2549,21 @@ describe('HttpRequestExecutor', () => {
         await sut.execute(request);
 
         // assert
-        expect(proxy.connects).toEqual([expect.objectContaining(attribution)]);
-        expect(proxy.requests).toEqual([]);
-        expect(Buffer.concat(tunneled).toString('latin1')).not.toMatch(
-          /x-bright/i
-        );
-        expect(tunneled[0]?.[0]).toBe(0x16);
+        expect({
+          connects: proxy.connects,
+          requests: proxy.requests,
+          tunnelStartsWithTlsHandshake: tunneled[0]?.[0] === 0x16
+        }).toEqual({
+          connects: [
+            {
+              'host': `127.0.0.1:${port}`,
+              'proxy-connection': 'Keep-Alive',
+              ...attribution
+            }
+          ],
+          requests: [],
+          tunnelStartsWithTlsHandshake: true
+        });
       } finally {
         target.close();
       }

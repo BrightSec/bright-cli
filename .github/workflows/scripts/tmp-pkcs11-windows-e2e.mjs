@@ -32,9 +32,14 @@ const fail = (message) => {
 };
 
 const env = (name, fallback) => {
-  const value = process.env[name] ?? fallback;
+  const raw = process.env[name] ?? fallback;
+  // Pasted secrets often carry a trailing newline; keys and IDs never contain whitespace.
+  const value = raw?.trim();
   if (!value) {
     fail(`${name} is not set`);
+  }
+  if (value !== raw) {
+    process.stdout.write(`warning: ${name} had surrounding whitespace, trimmed\n`);
   }
 
   return value;
@@ -289,8 +294,46 @@ const check = async (repeater, result) => {
   }
 };
 
+// The Repeater reports every login problem as the same "Failed to log in";
+// the REST API tells a bad key, another environment and a foreign ID apart.
+const checkCredentials = async () => {
+  const lookup = (host) =>
+    fetch(`https://${host}/api/v1/repeaters/${repeaterId}`, {
+      headers: { Authorization: `Api-Key ${apiKey}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(30_000)
+    });
+
+  const res = await lookup(hostname);
+  if (res.ok) {
+    const repeater = await res.json();
+    process.stdout.write(
+      `credentials: the API key sees repeater "${repeater.name}" on ${hostname}` +
+        ` (status: ${repeater.status}, projects: ${repeater.projectIds?.length ? repeater.projectIds.join(", ") : "any"})\n`
+    );
+
+    return;
+  }
+
+  const hint = {
+    401: 'the API key is not valid on this environment',
+    403: 'the API key lacks the repeaters:read scope (the e2e needs all scopes)',
+    404: "the repeater ID does not exist in the API key's organization"
+  }[res.status];
+  process.stdout.write(`credentials: GET /api/v1/repeaters/<id> on ${hostname} -> HTTP ${res.status}: ${hint ?? (await res.text())}\n`);
+
+  if (res.status === 401) {
+    const other = hostname === 'app.brightsec.com' ? 'development.playground.brightsec.com' : 'app.brightsec.com';
+    const otherRes = await lookup(other).catch(() => undefined);
+    if (otherRes && otherRes.status !== 401) {
+      process.stdout.write(`credentials: the same key is accepted on ${other} (HTTP ${otherRes.status}): the secrets are for that environment\n`);
+    }
+  }
+  fail(`the API key or repeater ID secret does not work on ${hostname}`);
+};
+
 const main = async () => {
   process.stdout.write(`== ${testCase}: ${p12}\n`);
+  await checkCredentials();
   loadCertificate();
 
   const repeater = await startRepeaterWithRetry();

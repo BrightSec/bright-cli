@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { HttpRequestExecutor } from './HttpRequestExecutor';
+import { HttpRequestExecutor, ScriptRequest } from './HttpRequestExecutor';
 import { VirtualScript, VirtualScripts, VirtualScriptType } from '../Scripts';
 import { Protocol } from './Protocol';
 import { Request, RequestOptions, Cert } from './Request';
@@ -1662,7 +1662,7 @@ describe('HttpRequestExecutor', () => {
      */
     const withVirtualScript = (
       url: string,
-      handle: (options: RequestOptions) => RequestOptions
+      handle: (options: ScriptRequest) => ScriptRequest
     ) => {
       const { hostname: virtualScriptId } = new URL(url);
       const virtualScript = new VirtualScript(
@@ -1672,7 +1672,7 @@ describe('HttpRequestExecutor', () => {
       );
       const spiedVirtualScript = spy(virtualScript);
       when(spiedVirtualScript.exec(anyString(), anything())).thenCall(
-        (_entrypoint: string, options: RequestOptions) =>
+        (_entrypoint: string, options: ScriptRequest) =>
           Promise.resolve(handle(options))
       );
       when(virtualScriptsMock.find(virtualScriptId)).thenReturn(
@@ -1728,23 +1728,27 @@ describe('HttpRequestExecutor', () => {
       expect(body.toString()).toEqual('rewritten by the script');
     });
 
-    it('should honour an encoding a script adds without touching the body', async () => {
+    it('should hand the script a binary body as bytes and send the bytes it edits', async () => {
       // arrange
-      // `Request.toJSON()` does not carry `encoding`, so a script that sets one
-      // is asking for its own body to be decoded. Restoring the original body
-      // and encoding here would silently drop that instruction.
-      const expected = binaryPattern(1024);
+      const original = binaryPattern(4096);
+      const expected = Buffer.from(original.map((byte) => 0xff - byte));
       const { baseUrl, received } = await startBodyCapturingServer();
       const request = new Request({
         protocol: Protocol.HTTP,
         url: `${baseUrl}/`,
         method: 'POST',
-        body: expected.toString('base64')
-      });
-      withVirtualScript(request.url, (options) => ({
-        ...options,
+        body: original.toString('base64'),
         encoding: 'base64'
-      }));
+      });
+      let seen: ScriptRequest['body'];
+      withVirtualScript(request.url, (options) => {
+        seen = Buffer.from(options.body as Uint8Array);
+        (options.body as Uint8Array).forEach(
+          (byte, index, bytes) => (bytes[index] = 0xff - byte)
+        );
+
+        return options;
+      });
       const sut = buildSut();
 
       // act
@@ -1752,7 +1756,36 @@ describe('HttpRequestExecutor', () => {
       const { body } = await received;
 
       // assert
-      expect(firstMismatch(body, expected)).toBe(-1);
+      expect(seen).toEqual(original);
+      expect(body).toEqual(expected);
+    });
+
+    it('should send the bytes a sandboxed script builds byte-exactly', async () => {
+      // arrange
+      const { baseUrl, received } = await startBodyCapturingServer();
+      const request = new Request({
+        protocol: Protocol.HTTP,
+        url: `${baseUrl}/`,
+        method: 'POST',
+        body: 'text'
+      });
+      const { hostname } = new URL(request.url);
+      when(virtualScriptsMock.find(hostname)).thenReturn(
+        new VirtualScript(
+          hostname,
+          VirtualScriptType.LOCAL,
+          'exports.handle = (options) => ({ ...options, body: new Uint8Array([0xff, 0x00, 0x80]) });'
+        ).compile(),
+        undefined
+      );
+      const sut = buildSut();
+
+      // act
+      await sut.execute(request);
+      const { body } = await received;
+
+      // assert
+      expect(body).toEqual(Buffer.from([0xff, 0x00, 0x80]));
     });
 
     it('should honour a per-request timeout after a script transform', async () => {
@@ -1780,22 +1813,22 @@ describe('HttpRequestExecutor', () => {
       expect(response.errorCode).toBeDefined();
     });
 
-    it('should hand the script every request option except the body encoding', async () => {
+    it('should hand the script only the url, method, headers and decoded body', async () => {
       // arrange
-      // The body the script receives is already decoded, so reporting the
-      // original `encoding` alongside it would describe it incorrectly.
       const { baseUrl, received } = await startBodyCapturingServer();
       const request = new Request({
         protocol: Protocol.HTTP,
-        url: `${baseUrl}/`,
+        url: `${baseUrl}/api/v1/users?id=42`,
         method: 'POST',
-        body: binaryPattern(64).toString('base64'),
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from('{"name":"Alice"}').toString('base64'),
         encoding: 'base64',
         timeout: 5000,
         maxContentSize: 7,
-        decompress: false
+        decompress: false,
+        keepAlive: true
       });
-      let seen: RequestOptions | undefined;
+      let seen: ScriptRequest | undefined;
       withVirtualScript(request.url, (options) => {
         seen = options;
 
@@ -1808,41 +1841,62 @@ describe('HttpRequestExecutor', () => {
       await received;
 
       // assert
-      expect(seen).toMatchObject({
-        timeout: 5000,
-        maxContentSize: 7,
-        decompress: false
+      expect(seen).toEqual({
+        url: `${baseUrl}/api/v1/users?id=42`,
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{"name":"Alice"}'
       });
-      expect(seen.encoding).toBeUndefined();
     });
 
-    it('should keep the body byte-exact when a script re-declares the original encoding', async () => {
+    it('should apply url, method, headers and body changes from a script', async () => {
       // arrange
-      // The script echoes back the encoding the request already had, so it has
-      // not asked for anything new. Treating that as a script-supplied encoding
-      // would base64-decode the lossy decoded view instead of the real body.
-      const expected = binaryPattern(4096);
-      const { baseUrl, received } = await startBodyCapturingServer();
+      let observed: Record<string, unknown> | undefined;
+      const { baseUrl } = await startServer((req, res) => {
+        let body = '';
+        req.on('data', (chunk) => (body += chunk));
+        req.on('end', () => {
+          observed = {
+            method: req.method,
+            url: req.url,
+            headers: req.headers,
+            body
+          };
+          res.end('ok');
+        });
+      });
       const request = new Request({
         protocol: Protocol.HTTP,
-        url: `${baseUrl}/`,
-        method: 'POST',
-        body: expected.toString('base64'),
-        encoding: 'base64'
+        url: `${baseUrl}/api/v1/users`,
+        method: 'GET'
       });
       withVirtualScript(request.url, (options) => ({
         ...options,
-        encoding: 'base64'
+        url: `${baseUrl}/api/v2/users?id=42`,
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', 'x-tenant': 'acme' },
+        body: '{"name":"Bob"}'
       }));
       const sut = buildSut();
 
       // act
       await sut.execute(request);
-      const { body } = await received;
 
       // assert
-      expect(firstMismatch(body, expected)).toBe(-1);
-      expect(body.length).toBe(expected.length);
+      expect(observed).toEqual({
+        method: 'PUT',
+        url: '/api/v2/users?id=42',
+        headers: {
+          'host': expect.any(String),
+          'accept': '*/*',
+          'accept-encoding': 'deflate, gzip, br, zstd',
+          'connection': 'close',
+          'content-type': 'application/json',
+          'content-length': '14',
+          'x-tenant': 'acme'
+        },
+        body: '{"name":"Bob"}'
+      });
     });
 
     it('should keep the body byte-exact when a script only changes headers', async () => {

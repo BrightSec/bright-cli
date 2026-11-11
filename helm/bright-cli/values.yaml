@@ -77,18 +77,20 @@ repeater:
     # and mounted with extraVolumes.
     module: /usr/lib/opensc-pkcs11.so
     # One --pkcs11-cert entry per target. Entries without "pinFile" or
-    # "pinEnv" read the PIN from pinSecret.
+    # "pinEnv" read the PIN from pinSecret. Quote "id", or 01 becomes 1.
     certs: []
       # - hostname: example.com
       #   port: 443
       #   token: "My Card"
-    # Existing Secret holding the token PIN, mounted as a file.
+      #   id: "01"
+    # Existing Secret holding the token PIN, mounted as a file readable through
+    # podSecurityContext.fsGroup; keep fsGroup set when overriding it.
     pinSecret:
       name: ""
       key: pin
     # Host directory with the pcscd socket (pcscd.comm), for a card reader
-    # attached to the node. Requires a hostPath volume, so the namespace's Pod
-    # Security level must allow it.
+    # attached to the node. Uses a hostPath volume, which only the
+    # "privileged" Pod Security level allows.
     pcscdSocketDir: ""
       # /run/pcscd
   

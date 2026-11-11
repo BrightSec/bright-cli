@@ -53,7 +53,6 @@ describe('HttpRequestExecutor', () => {
     hostname: 'localhost',
     pinEnv: 'CARD_PIN',
     token: env.token,
-    cert: 'token',
     maxConcurrency: 1,
     ...overrides
   });
@@ -122,7 +121,7 @@ describe('HttpRequestExecutor', () => {
       const result = await run({
         urls: urls(5),
         pkcs11: {
-          certs: [cert({ cert: join(env.pkiDir, 'client.pem') })],
+          certs: [cert({ certFile: join(env.pkiDir, 'client.pem') })],
           module: env.module,
           provider: env.provider
         }

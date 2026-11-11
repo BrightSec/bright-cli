@@ -11,15 +11,15 @@ export interface Pkcs11Cert {
   /** Token label; when absent the only token present is used. */
   token?: string;
   /**
-   * CKA_LABEL of the certificate on the token. With a PEM file in `cert`,
-   * the private key's label instead, needed only when the token does not
-   * expose the key's public half.
+   * CKA_LABEL of the certificate on the token. With `certFile`, the private
+   * key's label instead, needed only when the token does not expose the
+   * key's public half.
    */
   label?: string;
   /** Hex-encoded CKA_ID, with the same scope as `label`. */
   id?: string;
-  /** `"token"` reads the certificate from the token; any other value is a PEM file path. */
-  cert: string;
+  /** Absolute path of a PEM file with the certificate; when absent it is read from the token. */
+  certFile?: string;
   /** Concurrent connections allowed to sign with this key. */
   maxConcurrency: number;
 }

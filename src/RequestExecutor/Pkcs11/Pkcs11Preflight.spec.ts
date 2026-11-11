@@ -130,7 +130,6 @@ const fakeModule = ({
 const descriptor = (overrides: Partial<Pkcs11Cert> = {}): Pkcs11Cert => ({
   hostname: 'example.com',
   pinEnv: 'CARD_PIN',
-  cert: 'token',
   maxConcurrency: 1,
   ...overrides
 });
@@ -770,7 +769,7 @@ describe('Pkcs11Preflight', () => {
       // assert
       await expect(result).rejects.toMatchObject({
         message: expect.stringContaining(
-          'Their labels and ids are the same; set "cert" to a PEM file with the one example.com accepts and restart the Repeater.'
+          'Their labels and ids are the same; set "certFile" to a PEM file with the one example.com accepts and restart the Repeater.'
         )
       });
     });
@@ -811,7 +810,7 @@ describe('Pkcs11Preflight', () => {
       await expect(result).rejects.toMatchObject({
         code: Pkcs11ErrorCode.KEY_NOT_FOUND,
         message:
-          'Token "card" holds no certificates. Set "cert" to a PEM file with the certificate for example.com.'
+          'Token "card" holds no certificates. Set "certFile" to a PEM file with the certificate for example.com.'
       });
     });
 
@@ -855,7 +854,7 @@ describe('Pkcs11Preflight', () => {
 
       // act
       const identity = await preflight.identity(
-        descriptor({ cert: '/etc/client.pem' })
+        descriptor({ certFile: '/etc/client.pem' })
       );
 
       // assert
@@ -876,7 +875,7 @@ describe('Pkcs11Preflight', () => {
 
       // act
       const identity = await preflight.identity(
-        descriptor({ cert: '/etc/client.pem', id: '02' })
+        descriptor({ certFile: '/etc/client.pem', id: '02' })
       );
 
       // assert
@@ -896,7 +895,7 @@ describe('Pkcs11Preflight', () => {
 
       // act
       const result = preflight.identity(
-        descriptor({ cert: '/etc/client.pem' })
+        descriptor({ certFile: '/etc/client.pem' })
       );
 
       // assert
@@ -907,7 +906,7 @@ describe('Pkcs11Preflight', () => {
           '  1. "a" (id 01)',
           '  2. "b" (id 02)',
           'Choose one with "label" and restart the Repeater, for example:',
-          `  --pkcs11-cert '{"hostname":"example.com","pinEnv":"CARD_PIN","label":"a","cert":"/etc/client.pem"}'`
+          `  --pkcs11-cert '{"hostname":"example.com","pinEnv":"CARD_PIN","label":"a","certFile":"/etc/client.pem"}'`
         ].join('\n')
       });
     });
@@ -924,7 +923,7 @@ describe('Pkcs11Preflight', () => {
 
       // act
       const result = preflight.identity(
-        descriptor({ cert: '/etc/client.pem' })
+        descriptor({ certFile: '/etc/client.pem' })
       );
 
       // assert

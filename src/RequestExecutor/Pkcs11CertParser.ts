@@ -19,7 +19,7 @@ export class Pkcs11CertParser {
     'token',
     'label',
     'id',
-    'cert',
+    'certFile',
     'maxConcurrency'
   ]);
   private static readonly HEX_ID = /^(?:[0-9a-f]{2})+$/i;
@@ -157,7 +157,7 @@ export class Pkcs11CertParser {
       token: Pkcs11CertParser.optionalString(raw, 'token'),
       label: Pkcs11CertParser.optionalString(raw, 'label'),
       id: Pkcs11CertParser.id(raw),
-      cert: Pkcs11CertParser.cert(raw, daemon),
+      certFile: Pkcs11CertParser.certFile(raw, daemon),
       maxConcurrency: Pkcs11CertParser.maxConcurrency(raw)
     };
   }
@@ -175,10 +175,16 @@ export class Pkcs11CertParser {
       );
     }
 
-    // Entries written for the former key selector get its replacement named.
+    // Entries written for former fields get their replacement named.
     if ('object' in raw) {
       throw new Error(
         '"object" was renamed to "label", which selects the certificate on the token by its label.'
+      );
+    }
+
+    if ('cert' in raw) {
+      throw new Error(
+        '"cert" was replaced by "certFile", the path of a PEM file with the certificate. Leave it out to read the certificate from the token.'
       );
     }
 
@@ -301,12 +307,12 @@ export class Pkcs11CertParser {
     return id?.toLowerCase();
   }
 
-  private static cert(raw: RawEntry, daemon: boolean): string {
-    const cert = Pkcs11CertParser.optionalString(raw, 'cert') ?? 'token';
+  private static certFile(raw: RawEntry, daemon: boolean): string | undefined {
+    const path = Pkcs11CertParser.optionalString(raw, 'certFile');
 
-    return cert === 'token'
-      ? cert
-      : Pkcs11CertParser.resolveFile(cert, '"cert"', daemon);
+    return path === undefined
+      ? undefined
+      : Pkcs11CertParser.resolveFile(path, '"certFile"', daemon);
   }
 
   private static maxConcurrency(raw: RawEntry): number {

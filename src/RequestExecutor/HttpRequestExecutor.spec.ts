@@ -2182,7 +2182,6 @@ describe('HttpRequestExecutor', () => {
     const pkcs11Cert: Pkcs11Cert = {
       hostname: '127.0.0.1',
       pinEnv: 'CARD_PIN',
-      cert: 'token',
       maxConcurrency: 1
     };
 

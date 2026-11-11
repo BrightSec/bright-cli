@@ -320,10 +320,16 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      # ts-node and socket.io for the smoke test's target and fake cloud.
+      # Before the download, which replaces package.json with the bumped version.
+      - name: Install deps
+        uses: ./.github/workflows/composite/npm
+
       - uses: actions/download-artifact@v4
         with:
           name: build
-
       # The release Dockerfile installs the CLI from the npm registry, which only
       # has published versions; install the packed tarball instead.
       - name: Point Dockerfile at the packed tarball
@@ -365,6 +371,40 @@ jobs:
           docker run --rm brightsec/cli:pkcs11-ci --version | tee version.txt
           grep -q "${{ needs.build.outputs.version }}" version.txt
           docker run --rm brightsec/cli:pkcs11-ci repeater --help > /dev/null
+
+      # A fake Bright cloud sends the Repeater in the image one request to an
+      # mTLS target that requires the client certificate on a SoftHSM2 token.
+      # The "default" builder is the one that sees the image loaded above.
+      - name: Smoke-test PKCS#11 in the image
+        run: |
+          docker buildx build --builder default --load -t bright-cli-pkcs11-smoke - <<'EOF'
+          FROM brightsec/cli:pkcs11-ci
+          USER root
+          RUN apk add --no-cache softhsm openssl bash
+          USER 1000
+          EOF
+          cat > pkcs11-smoke.sh <<'EOF'
+          set -euo pipefail
+          export PKCS11_TEST_WORK_DIR=/tmp/pkcs11
+          tests/pkcs11/setup.sh
+          . /tmp/pkcs11/pkcs11.env
+          # The Repeater must find the image's provider by itself.
+          unset OPENSSL_MODULES OPENSSL_CONF PKCS11_MODULE_PATH PKCS11_PROVIDER_MODULE
+          echo 1234 > /tmp/pkcs11/pin.txt
+          echo 0000 > /tmp/pkcs11/bad-pin.txt
+          node -r ts-node/register/transpile-only tests/pkcs11/target.ts > /tmp/target.log 2>&1 &
+          for _ in $(seq 60); do grep -q listening /tmp/target.log && break; sleep 1; done
+          grep -q listening /tmp/target.log || { cat /tmp/target.log; exit 1; }
+          for expected in 200:pin.txt PKCS11_PIN_INCORRECT:bad-pin.txt; do
+            CERT="{\"hostname\":\"localhost\",\"port\":8443,\"token\":\"$PKCS11_TEST_TOKEN\",\"pinFile\":\"/tmp/pkcs11/${expected#*:}\"}"
+            node -r ts-node/register/transpile-only tests/pkcs11/repeater-smoke.ts \
+              https://localhost:8443/ "${expected%%:*}" -- \
+              bright-cli repeater --hostname localhost \
+              --token smoke.token --id 8PY6wKetVqmfMC9K9g4A7Y \
+              --pkcs11-module "$PKCS11_TEST_MODULE" --pkcs11-cert "$CERT"
+          done
+          EOF
+          docker run --rm -v "$PWD":/src:ro -w /src --entrypoint bash bright-cli-pkcs11-smoke pkcs11-smoke.sh
 
   helm:
     needs: build

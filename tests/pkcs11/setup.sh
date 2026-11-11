@@ -44,6 +44,12 @@ case "$(uname -s)" in
     MODULE=$(first_existing /usr/lib/*-linux-gnu/softhsm/libsofthsm2.so /usr/lib/softhsm/libsofthsm2.so /usr/lib64/pkcs11/libsofthsm2.so)
     PROVIDER_LIB=$(first_existing /usr/lib/*-linux-gnu/ossl-modules/pkcs11.so /usr/lib64/ossl-modules/pkcs11.so)
     PROVIDER=pkcs11
+    if [ -z "$PROVIDER_LIB" ]; then
+      # Alpine has no pkcs11-provider package, only libp11's provider.
+      INSTALL_HINT='Install: apt-get install softhsm2 opensc pkcs11-provider openssl, or apk add softhsm opensc libp11 openssl'
+      PROVIDER_LIB=$(first_existing /usr/lib/ossl-modules/pkcs11prov.so)
+      PROVIDER=pkcs11prov
+    fi
     ENGINE_LIB=$(first_existing /usr/lib/*-linux-gnu/engines-3/pkcs11.so /usr/lib64/engines-3/pkcs11.so)
     ;;
   Darwin)

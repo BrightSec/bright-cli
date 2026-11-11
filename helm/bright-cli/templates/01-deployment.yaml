@@ -1,3 +1,16 @@
+{{- $pkcs11 := .Values.repeater.pkcs11 -}}
+{{- $pkcs11Enabled := not (empty $pkcs11.certs) -}}
+{{- $pinDir := "/etc/bright-cli/pkcs11-pin" -}}
+{{- $pinKey := $pkcs11.pinSecret.key | default "pin" | toString -}}
+{{- $userTmp := false -}}
+{{- range .Values.repeater.extraVolumeMounts -}}
+{{- if eq (toString .mountPath) "/tmp" -}}
+{{- $userTmp = true -}}
+{{- end -}}
+{{- end -}}
+{{- if and $pkcs11Enabled (not $pkcs11.module) -}}
+{{- fail "repeater.pkcs11.module is required when repeater.pkcs11.certs is set" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,6 +45,25 @@ spec:
             {{- range $key, $value := .Values.repeater.extraArgs }}
             - "--{{ $key }}={{ $value }}"
             {{- end }}
+            {{- if $pkcs11Enabled }}
+            - {{ printf "--pkcs11-module=%s" $pkcs11.module | toJson }}
+            {{- range $cert := $pkcs11.certs }}
+            {{- $entry := deepCopy $cert }}
+            {{- /* YAML and --set turn values such as token: 1234 into numbers, which the Repeater rejects. */}}
+            {{- range $field := list "hostname" "token" "object" "id" "cert" "pinFile" "pinEnv" }}
+            {{- if hasKey $entry $field }}
+            {{- $_ := set $entry $field (toString (get $entry $field)) }}
+            {{- end }}
+            {{- end }}
+            {{- if not (or (hasKey $entry "pinFile") (hasKey $entry "pinEnv")) }}
+            {{- if not $pkcs11.pinSecret.name }}
+            {{- fail (printf "repeater.pkcs11.pinSecret.name is required: the certificate for %s has no pinFile or pinEnv" (toString $entry.hostname)) }}
+            {{- end }}
+            {{- $_ := set $entry "pinFile" (printf "%s/%s" $pinDir $pinKey) }}
+            {{- end }}
+            - {{ printf "--pkcs11-cert=%s" (toJson $entry) | toJson }}
+            {{- end }}
+            {{- end }}
           env:
             - name: BRIGHT_HOSTNAME
               value: "{{ .Values.api.hostname }}"
@@ -47,10 +79,64 @@ spec:
                   {{- end }}
             - name: REPEATER_ID
               value: "{{ .Values.repeater.id }}"
+            {{- with .Values.repeater.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.repeater.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.repeater.containerSecurityContext | nindent 12 }}
+          {{- if or $pkcs11Enabled .Values.repeater.extraVolumeMounts }}
+          volumeMounts:
+            {{- if $pkcs11Enabled }}
+            {{- if not $userTmp }}
+            # The Repeater writes its OpenSSL provider config to a temporary directory.
+            - name: pkcs11-tmp
+              mountPath: /tmp
+            {{- end }}
+            {{- if $pkcs11.pinSecret.name }}
+            - name: pkcs11-pin
+              mountPath: {{ $pinDir }}
+              readOnly: true
+            {{- end }}
+            {{- if $pkcs11.pcscdSocketDir }}
+            - name: pkcs11-pcscd
+              mountPath: /run/pcscd
+              readOnly: true
+            {{- end }}
+            {{- end }}
+            {{- with .Values.repeater.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+      {{- if or $pkcs11Enabled .Values.repeater.extraVolumes }}
+      volumes:
+        {{- if $pkcs11Enabled }}
+        {{- if not $userTmp }}
+        - name: pkcs11-tmp
+          emptyDir: {}
+        {{- end }}
+        {{- if $pkcs11.pinSecret.name }}
+        - name: pkcs11-pin
+          secret:
+            secretName: {{ $pkcs11.pinSecret.name | toString | quote }}
+            items:
+              - key: {{ $pinKey | quote }}
+                path: {{ $pinKey | quote }}
+            # Owned by root with the pod's fsGroup: group-readable for the non-root user.
+            defaultMode: 0440
+        {{- end }}
+        {{- if $pkcs11.pcscdSocketDir }}
+        - name: pkcs11-pcscd
+          hostPath:
+            path: {{ $pkcs11.pcscdSocketDir | toString | quote }}
+            type: Directory
+        {{- end }}
+        {{- end }}
+        {{- with .Values.repeater.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
       {{- with .Values.repeater.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

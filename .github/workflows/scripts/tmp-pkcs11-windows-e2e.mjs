@@ -121,7 +121,9 @@ const loadCertificate = () => {
 const repeaterEnv = () => {
   const result = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (!/^(path|softhsm2_conf|openssl_modules|openssl_conf|pkcs11_module_path|pkcs11_provider_module)$/i.test(key)) {
+    if (!/^(path|softhsm2_conf|openssl_modules|openssl_conf|pkcs11_module_path|pkcs11_provider_module)$/i.test(key)
+      // The repeater command reads REPEATER_* variables as options, e.g. REPEATER_BIN as --bin.
+      && !/^repeater_/i.test(key)) {
       result[key] = value;
     }
   }

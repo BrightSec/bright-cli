@@ -22,6 +22,7 @@ import {
   Multi
 } from '@brightsec/node-libcurl';
 import { parse as parseUrl } from 'node:url';
+import { isUtf8 } from 'node:buffer';
 import { isUint8Array } from 'node:util/types';
 
 export type ScriptRequest = Pick<
@@ -605,19 +606,13 @@ export class HttpRequestExecutor implements RequestExecutor {
   // A body that is not valid UTF-8 would be corrupted by a string view, so a
   // script gets it as bytes.
   private decodeScriptBody({ body, encoding }: Request): ScriptRequest['body'] {
-    if (!encoding) {
+    if (!encoding || !body) {
       return body;
     }
 
-    const bytes = iconv.encode(body, encoding);
+    const bytes = Buffer.from(body, encoding);
 
-    try {
-      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
-        bytes
-      );
-    } catch {
-      return bytes;
-    }
+    return isUtf8(bytes) ? bytes.toString() : bytes;
   }
 
   private encodeScriptBody(

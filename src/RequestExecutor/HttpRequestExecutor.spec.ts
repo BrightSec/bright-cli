@@ -2388,8 +2388,7 @@ describe('HttpRequestExecutor', () => {
         withinBudget: mean < MAX_MEAN_LATENCY_MS
       }).toEqual(expect.objectContaining({ withinBudget: true }));
     }, 60000);
-  });
-  describe('proxy target attribution', () => {
+
     const ids = {
       entrypointId: 'bEgigzxPai9A1hpkbYDp6i',
       scanId: 'tUv3ZqXo8mWkR5sJfHa2Lc',
@@ -2419,7 +2418,7 @@ describe('HttpRequestExecutor', () => {
       return { baseUrl, received };
     };
 
-    it('should send the ids to the proxy only', async () => {
+    it('should send the attribution ids to the proxy only', async () => {
       // arrange
       const target = await startTarget();
       const proxy = await startProxy();
@@ -2438,7 +2437,7 @@ describe('HttpRequestExecutor', () => {
       expect(target.received).toEqual([proxied]);
     });
 
-    it('should send only the ids that are present', async () => {
+    it('should send only the attribution ids that are present', async () => {
       // arrange
       const target = await startTarget();
       const proxy = await startProxy();
@@ -2469,7 +2468,7 @@ describe('HttpRequestExecutor', () => {
           "({ ...req, entrypointId: 'hJ6wNcQ8vTm3pXrKz5GbAd', scanId: 'hJ6wNcQ8vTm3pXrKz5GbAd', discoveryId: 'hJ6wNcQ8vTm3pXrKz5GbAd' })"
       }
     ])(
-      'should keep the original ids when a request script $name',
+      'should keep the original attribution ids when a request script $name',
       async ({ handle }) => {
         // arrange
         const target = await startTarget();
@@ -2500,7 +2499,7 @@ describe('HttpRequestExecutor', () => {
       }
     );
 
-    it('should keep the ids across a toJSON round-trip', async () => {
+    it('should keep the attribution ids across a toJSON round-trip', async () => {
       // arrange
       const target = await startTarget();
       const proxy = await startProxy();
@@ -2524,7 +2523,7 @@ describe('HttpRequestExecutor', () => {
       expect(proxy.requests).toEqual([{ ...proxied, ...attribution }]);
     });
 
-    it('should not send the ids to the proxy without the option', async () => {
+    it('should not send the attribution ids to the proxy without proxyTargetAttribution', async () => {
       // arrange
       const target = await startTarget();
       const proxy = await startProxy();
@@ -2544,27 +2543,34 @@ describe('HttpRequestExecutor', () => {
         name: 'the host bypasses the proxy',
         options: { proxyDomainsBypass: ['127.0.0.1'] }
       }
-    ])('should send nothing when $name', async ({ options }) => {
-      // arrange
-      const target = await startTarget();
-      const proxy = await startProxy();
-      const sut = buildSut({
-        proxyUrl: 'proxyDomainsBypass' in options ? proxy.proxyUrl : undefined,
-        proxyTargetAttribution: true,
-        ...options
-      });
-      const { request } = createRequest({ url: `${target.baseUrl}/`, ...ids });
+    ])(
+      'should not send the attribution ids when $name',
+      async ({ options }) => {
+        // arrange
+        const target = await startTarget();
+        const proxy = await startProxy();
+        const sut = buildSut({
+          proxyUrl:
+            'proxyDomainsBypass' in options ? proxy.proxyUrl : undefined,
+          proxyTargetAttribution: true,
+          ...options
+        });
+        const { request } = createRequest({
+          url: `${target.baseUrl}/`,
+          ...ids
+        });
 
-      // act
-      const response = await sut.execute(request);
+        // act
+        const response = await sut.execute(request);
 
-      // assert
-      expect(response.statusCode).toBe(200);
-      expect(proxy.requests).toEqual([]);
-      expect(target.received).toEqual([plain]);
-    });
+        // assert
+        expect(response.statusCode).toBe(200);
+        expect(proxy.requests).toEqual([]);
+        expect(target.received).toEqual([plain]);
+      }
+    );
 
-    it('should send the ids only on CONNECT for an https target', async () => {
+    it('should send the attribution ids only on CONNECT for an https target', async () => {
       // arrange
       const tunneled: Buffer[] = [];
       const target = net.createServer((socket) => {

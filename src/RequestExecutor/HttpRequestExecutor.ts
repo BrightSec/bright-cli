@@ -581,11 +581,7 @@ export class HttpRequestExecutor implements RequestExecutor {
       return script;
     }
 
-    // The string view of a binary body is lossy, so an untouched body is
-    // restored from the original instead.
-    const decodedBody = script.encoding
-      ? iconv.encode(script.body, script.encoding).toString()
-      : script.body;
+    const scriptBody = this.decodeScriptBody(script);
 
     const result = await vm.exec<ScriptEntrypoint>(
       this.DEFAULT_SCRIPT_ENTRYPOINT,
@@ -593,7 +589,7 @@ export class HttpRequestExecutor implements RequestExecutor {
         url: script.url,
         method: script.method,
         headers: script.headers,
-        body: decodedBody
+        body: scriptBody
       }
     );
 
@@ -602,15 +598,34 @@ export class HttpRequestExecutor implements RequestExecutor {
       url: result.url,
       method: result.method,
       headers: result.headers,
-      ...this.scriptBody(result.body, decodedBody)
+      ...this.encodeScriptBody(result.body, scriptBody)
     });
   }
 
-  private scriptBody(
+  // A body that is not valid UTF-8 would be corrupted by a string view, so a
+  // script gets it as bytes.
+  private decodeScriptBody({ body, encoding }: Request): ScriptRequest['body'] {
+    if (!encoding) {
+      return body;
+    }
+
+    const bytes = iconv.encode(body, encoding);
+
+    try {
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+        bytes
+      );
+    } catch {
+      return bytes;
+    }
+  }
+
+  private encodeScriptBody(
     body: ScriptRequest['body'],
-    decodedBody: string | undefined
+    scriptBody: ScriptRequest['body']
   ): Pick<RequestOptions, 'body' | 'encoding'> {
-    if (body === decodedBody) {
+    // Bytes may be edited in place, so only an unchanged string is untouched.
+    if (typeof body === 'string' && body === scriptBody) {
       return {};
     }
 

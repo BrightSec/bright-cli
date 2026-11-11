@@ -1728,6 +1728,38 @@ describe('HttpRequestExecutor', () => {
       expect(body.toString()).toEqual('rewritten by the script');
     });
 
+    it('should hand the script a binary body as bytes and send the bytes it edits', async () => {
+      // arrange
+      const original = binaryPattern(4096);
+      const expected = Buffer.from(original.map((byte) => 0xff - byte));
+      const { baseUrl, received } = await startBodyCapturingServer();
+      const request = new Request({
+        protocol: Protocol.HTTP,
+        url: `${baseUrl}/`,
+        method: 'POST',
+        body: original.toString('base64'),
+        encoding: 'base64'
+      });
+      let seen: ScriptRequest['body'];
+      withVirtualScript(request.url, (options) => {
+        seen = Buffer.from(options.body as Uint8Array);
+        (options.body as Uint8Array).forEach(
+          (byte, index, bytes) => (bytes[index] = 0xff - byte)
+        );
+
+        return options;
+      });
+      const sut = buildSut();
+
+      // act
+      await sut.execute(request);
+      const { body } = await received;
+
+      // assert
+      expect(seen).toEqual(original);
+      expect(body).toEqual(expected);
+    });
+
     it('should send the bytes a sandboxed script builds byte-exactly', async () => {
       // arrange
       const { baseUrl, received } = await startBodyCapturingServer();

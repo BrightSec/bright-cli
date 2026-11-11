@@ -27,9 +27,13 @@ export class Pkcs11Uri {
       path.push(`serial=${Pkcs11Uri.encode(serial)}`);
     }
 
+    // Both, when known: the provider resolves the URI on its own, and either
+    // attribute alone may match more objects than the one the caller selected.
     if (id?.length) {
       path.push(`id=${Pkcs11Uri.encodeBytes(id)}`);
-    } else if (object) {
+    }
+
+    if (object) {
       path.push(`object=${Pkcs11Uri.encode(object)}`);
     }
 

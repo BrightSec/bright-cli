@@ -53,8 +53,11 @@ const certificate = (label: string, id?: string): Pkcs11CertificateInfo => ({
   handle: Buffer.from(`cert ${label}`),
   label,
   id: id === undefined ? undefined : Buffer.from(id, 'hex'),
-  value: Buffer.from('not a DER certificate')
+  value: Buffer.from(`not a DER certificate: ${label}`)
 });
+
+const PIV_CERT_LABEL = 'X.509 Certificate for PIV Authentication';
+const PIV_ATTESTATION_LABEL = 'X.509 Certificate for PIV Attestation 9a';
 
 const matches = (
   object: { label?: string; id?: Buffer },
@@ -126,8 +129,8 @@ describe('Pkcs11Preflight', () => {
       expect(identity).toEqual({
         provider: 'pkcs11prov',
         keyUri:
-          'pkcs11:token=card;serial=card-serial;id=%01;type=private?pin-value=1234',
-        certUri: 'pkcs11:token=card;serial=card-serial;id=%01;type=cert',
+          'pkcs11:token=card;serial=card-serial;id=%01;object=client;type=private?pin-value=1234',
+        certificate: Buffer.from('not a DER certificate: client'),
         certFile: undefined,
         tls12Only: false
       });
@@ -501,7 +504,7 @@ describe('Pkcs11Preflight', () => {
         ],
         certs: [
           certificate('X.509 Certificate for Digital Signature', '02'),
-          certificate(Pkcs11Preflight.PIV_CERT_LABEL, '01')
+          certificate(PIV_CERT_LABEL, '01')
         ]
       });
       const { preflight } = create(module);
@@ -511,14 +514,16 @@ describe('Pkcs11Preflight', () => {
 
       // assert
       expect(identity.keyUri).toContain('id=%01;');
-      expect(identity.certUri).toContain('id=%01;');
+      expect(identity.certificate).toEqual(
+        certificate(PIV_CERT_LABEL, '01').value
+      );
     });
 
     it('should find the PIV certificate by label when the key has no id', async () => {
       // arrange
       const module = fakeModule({
         keys: [key('other'), key(Pkcs11Preflight.PIV_KEY_LABEL)],
-        certs: [certificate(Pkcs11Preflight.PIV_CERT_LABEL, '01')]
+        certs: [certificate(PIV_CERT_LABEL, '01')]
       });
       const { preflight } = create(module);
 
@@ -526,9 +531,101 @@ describe('Pkcs11Preflight', () => {
       const identity = await preflight.identity(descriptor());
 
       // assert
-      expect(identity.certUri).toBe(
-        'pkcs11:token=card;serial=card-serial;id=%01;type=cert'
+      expect(identity.certificate).toEqual(
+        certificate(PIV_CERT_LABEL, '01').value
       );
+    });
+
+    it('should choose the PIV authentication certificate over the attestation certificate with the same id', async () => {
+      // arrange
+      const module = fakeModule({
+        keys: [key(Pkcs11Preflight.PIV_KEY_LABEL, '01', CKK_RSA)],
+        certs: [
+          certificate(PIV_ATTESTATION_LABEL, '01'),
+          certificate(PIV_CERT_LABEL, '01')
+        ]
+      });
+      const { preflight } = create(module);
+
+      // act
+      const identity = await preflight.identity(descriptor({ id: '01' }));
+
+      // assert
+      expect(identity.certificate).toEqual(
+        certificate(PIV_CERT_LABEL, '01').value
+      );
+    });
+
+    it('should choose the certificate labelled like the key among those with its id', async () => {
+      // arrange
+      const module = fakeModule({
+        certs: [certificate('other', '01'), certificate('client', '01')]
+      });
+      const { preflight } = create(module);
+
+      // act
+      const identity = await preflight.identity(descriptor());
+
+      // assert
+      expect(identity.certificate).toEqual(certificate('client', '01').value);
+    });
+
+    it('should refuse to choose between certificates with the id and label of the key', async () => {
+      // arrange
+      const module = fakeModule({
+        certs: [certificate('client', '01'), certificate('client', '01')]
+      });
+      const { preflight } = create(module);
+
+      // act
+      const result = preflight.identity(descriptor());
+
+      // assert
+      await expect(result).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.KEY_NOT_FOUND,
+        message:
+          'Several certificates belong to key "client" (id 01): "client" (id 01), "client" (id 01); set "cert" to a PEM file with the one example.com accepts.'
+      });
+    });
+
+    it('should refuse a selector that matches several keys', async () => {
+      // arrange
+      const module = fakeModule({
+        keys: [key('client', '01'), key('client', '02')],
+        certs: [certificate('client', '01'), certificate('client', '02')]
+      });
+      const { preflight } = create(module);
+
+      // act
+      const result = preflight.identity(descriptor({ object: 'client' }));
+
+      // assert
+      await expect(result).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.KEY_NOT_FOUND,
+        message:
+          'Several private keys have label "client": "client" (id 01), "client" (id 02); set both "object" and "id" to choose one.'
+      });
+    });
+
+    it('should refuse a key whose id and label another key shares', async () => {
+      // arrange
+      const module = fakeModule({
+        keys: [
+          key(Pkcs11Preflight.PIV_KEY_LABEL, '01'),
+          key(Pkcs11Preflight.PIV_KEY_LABEL, '01')
+        ],
+        certs: [certificate(PIV_CERT_LABEL, '01')]
+      });
+      const { preflight } = create(module);
+
+      // act
+      const result = preflight.identity(descriptor());
+
+      // assert
+      await expect(result).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.KEY_NOT_FOUND,
+        message: `Several private keys on the token share the id and label of "${Pkcs11Preflight.PIV_KEY_LABEL}" (id 01), so the OpenSSL provider cannot tell them apart.`
+      });
     });
 
     it('should list the keys when it cannot choose one', async () => {
@@ -610,7 +707,7 @@ describe('Pkcs11Preflight', () => {
 
       // assert
       expect(identity).toMatchObject({
-        certUri: undefined,
+        certificate: undefined,
         certFile: '/etc/client.pem'
       });
     });

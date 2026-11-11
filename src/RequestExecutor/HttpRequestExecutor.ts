@@ -386,9 +386,9 @@ export class HttpRequestExecutor implements RequestExecutor {
     curl.setOpt('SSLKEYTYPE', 'PROV');
     curl.setOpt('SSLKEY', identity.keyUri);
 
-    if (identity.certUri) {
-      curl.setOpt('SSLCERTTYPE', 'PROV');
-      curl.setOpt('SSLCERT', identity.certUri);
+    if (identity.certificate) {
+      curl.setOpt('SSLCERTTYPE', 'DER');
+      curl.setOpt('SSLCERT_BLOB', identity.certificate);
     } else {
       curl.setOpt('SSLCERT', identity.certFile);
     }

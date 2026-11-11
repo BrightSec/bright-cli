@@ -2,7 +2,7 @@ import { Pkcs11Uri } from './Pkcs11Uri';
 
 describe('Pkcs11Uri', () => {
   describe('build', () => {
-    it('should prefer the id over the label', () => {
+    it('should put both the id and the label into the URI', () => {
       // act
       const uri = Pkcs11Uri.build({
         token: 'card',
@@ -12,7 +12,9 @@ describe('Pkcs11Uri', () => {
       });
 
       // assert
-      expect(uri).toBe('pkcs11:token=card;id=%01%ab;type=private');
+      expect(uri).toBe(
+        'pkcs11:token=card;id=%01%ab;object=client;type=private'
+      );
     });
 
     it('should add the serial after the token label', () => {

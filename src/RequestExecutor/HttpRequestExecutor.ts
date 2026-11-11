@@ -603,8 +603,6 @@ export class HttpRequestExecutor implements RequestExecutor {
     });
   }
 
-  // A body that is not valid UTF-8 would be corrupted by a string view, so a
-  // script gets it as bytes.
   private decodeScriptBody({ body, encoding }: Request): ScriptRequest['body'] {
     if (!encoding || !body) {
       return body;

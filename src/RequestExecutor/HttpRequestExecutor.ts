@@ -25,7 +25,7 @@ import {
 import { parse as parseUrl } from 'node:url';
 
 type ScriptEntrypoint = (
-  options: RequestOptions
+  options: Pick<RequestOptions, 'url' | 'method' | 'headers' | 'body'>
 ) => Promise<RequestOptions> | RequestOptions;
 
 type ResponseScriptEntrypoint = (options: {
@@ -599,18 +599,13 @@ export class HttpRequestExecutor implements RequestExecutor {
       ? iconv.encode(script.body, script.encoding).toString()
       : script.body;
 
-    const { entrypointId, scanId, discoveryId, ...options }: RequestOptions =
-      script.toJSON();
-
     const result = await vm.exec<ScriptEntrypoint>(
       this.DEFAULT_SCRIPT_ENTRYPOINT,
       {
-        ...options,
-        body: decodedBody,
-        // The body handed to the script is already decoded, so reporting the
-        // original `encoding` would describe it incorrectly. Every other option
-        // round-trips verbatim.
-        encoding: undefined
+        url: script.url,
+        method: script.method,
+        headers: script.headers,
+        body: decodedBody
       }
     );
     // The script is handed the body already decoded and no `encoding`, so one it
@@ -624,12 +619,13 @@ export class HttpRequestExecutor implements RequestExecutor {
     const restoreOriginalBody = bodyUntouched && encodingUnchanged;
 
     return new Request({
+      ...script.toJSON(),
+      url: result.url,
+      method: result.method,
+      headers: result.headers,
       ...(restoreOriginalBody
-        ? { ...result, body: script.body, encoding: script.encoding }
-        : result),
-      entrypointId,
-      scanId,
-      discoveryId
+        ? {}
+        : { body: result.body, encoding: result.encoding })
     });
   }
 

@@ -17,6 +17,9 @@ export interface RepeaterServerRequestEvent {
   timeout?: number;
   // Carried as a DTO field by bridges; read for the Sentry tag, never sent to the target.
   traceId?: string;
+  entrypointId?: string;
+  scanId?: string;
+  discoveryId?: string;
 }
 
 export type RepeaterServerNetworkTestEvent =

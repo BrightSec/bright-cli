@@ -4,10 +4,12 @@ import {
   Pkcs11Module,
   Pkcs11ModuleError,
   Pkcs11ModuleLoader,
+  Pkcs11ObjectFilter,
   Pkcs11ObjectInfo,
   Pkcs11PrivateKeyInfo,
   Pkcs11Token
 } from './Pkcs11Module';
+import { Pkcs11PublicKey } from './Pkcs11PublicKey';
 import { Pkcs11Uri } from './Pkcs11Uri';
 import { Pkcs11Cert } from '../Pkcs11Cert';
 import { logger } from '../../Utils';
@@ -41,6 +43,8 @@ export interface Pkcs11PreflightOptions {
   now?: () => number;
   env?: NodeJS.ProcessEnv;
   readFile?: (path: string) => string;
+  /** Decides how the example --pkcs11-cert in error messages is quoted. */
+  platform?: NodeJS.Platform;
 }
 
 interface StoredFailure {
@@ -56,6 +60,17 @@ interface Login {
   pin?: string;
 }
 
+interface KeyEntry {
+  key: Pkcs11PrivateKeyInfo;
+  /** SubjectPublicKeyInfo DER; undefined when the token hides the public half. */
+  publicKey?: Buffer;
+}
+
+interface Pairing {
+  certificate: Pkcs11CertificateInfo;
+  key: Pkcs11PrivateKeyInfo;
+}
+
 /**
  * Checks each PKCS#11 certificate once before it is used: token present, PIN
  * usable, exactly one login, key and certificate found. Results are shared by
@@ -65,6 +80,9 @@ interface Login {
 export class Pkcs11Preflight {
   public static readonly PIV_KEY_LABEL = 'Private key for PIV Authentication';
   private static readonly PIV_KEY_LABEL_PATTERN = /^Private key for (.+)$/;
+  // YKCS11 prefixes it with "X.509 ", OpenSC does not.
+  private static readonly PIV_AUTH_CERT_LABEL =
+    /(?:^|\s)Certificate for PIV Authentication$/;
 
   // PKCS#11 v2.40 constants, kept here so this class does not need the native binding.
   private static readonly CKF_LOGIN_REQUIRED = 0x00000004;
@@ -83,6 +101,7 @@ export class Pkcs11Preflight {
   private readonly now: () => number;
   private readonly env: NodeJS.ProcessEnv;
   private readonly readFile: (path: string) => string;
+  private readonly platform: NodeJS.Platform;
   private readonly inflight = new Map<Pkcs11Cert, Promise<Pkcs11Identity>>();
   private readonly identities = new Map<Pkcs11Cert, Pkcs11Identity>();
   private readonly failures = new Map<Pkcs11Cert, StoredFailure>();
@@ -97,13 +116,15 @@ export class Pkcs11Preflight {
       retryAfterMs = 30_000,
       now = Date.now,
       env = process.env,
-      readFile = (path: string) => readFileSync(path, 'utf8')
+      readFile = (path: string) => readFileSync(path, 'utf8'),
+      platform = process.platform
     }: Pkcs11PreflightOptions = {}
   ) {
     this.retryAfterMs = retryAfterMs;
     this.now = now;
     this.env = env;
     this.readFile = readFile;
+    this.platform = platform;
   }
 
   // The flags are single bits; this avoids bitwise operators, which the lint rules ban.
@@ -162,11 +183,17 @@ export class Pkcs11Preflight {
 
   private resolveIdentity(cert: Pkcs11Cert): Pkcs11Identity {
     const { module, token, session, pin } = this.login(cert);
-    const key = this.selectKey(module, session, cert);
-    const certificate =
+    const certFile =
+      cert.cert === 'token' ? undefined : this.readCertFile(cert);
+    const { key, certificate } =
       cert.cert === 'token'
-        ? this.selectCertificate(module, session, cert, key)
-        : undefined;
+        ? this.selectFromToken(module, session, token, cert)
+        : {
+            key: this.selectKeyForFile(module, session, token, cert, certFile),
+            certificate: undefined
+          };
+
+    this.assertKeyUriIsUnique(module, session, key);
 
     if (certificate) {
       logger.debug(
@@ -177,7 +204,7 @@ export class Pkcs11Preflight {
       );
     }
 
-    this.warnIfExpired(cert, certificate?.value ?? this.readCertFile(cert));
+    this.warnIfExpired(cert, certificate?.value ?? certFile);
 
     const tls12Only =
       key.keyType === Pkcs11Preflight.CKK_RSA &&
@@ -404,58 +431,167 @@ export class Pkcs11Preflight {
     }
   }
 
-  private selectKey(
+  private selectFromToken(
     module: Pkcs11Module,
     session: Buffer,
+    token: Pkcs11Token,
     cert: Pkcs11Cert
-  ): Pkcs11PrivateKeyInfo {
-    const explicit = cert.object !== undefined || cert.id !== undefined;
-    const keys = module.findPrivateKeys(session, {
-      label: cert.object,
-      id: cert.id ? Buffer.from(cert.id, 'hex') : undefined
-    });
+  ): Pairing {
+    const certificates = module.findCertificates(session, this.selector(cert));
 
-    const key = explicit
-      ? this.selectExplicitKey(cert, keys)
-      : this.selectKeyAutomatically(module, session, cert, keys);
+    if (!certificates.length) {
+      throw this.noCertificate(module, session, token, cert);
+    }
 
-    if (!key) {
-      throw new Pkcs11Error(
-        Pkcs11ErrorCode.KEY_NOT_FOUND,
-        explicit
-          ? `No private key with ${this.describeSelector(cert)} on the token.`
-          : `Cannot choose a private key; set "object" or "id". Keys found: ${
-              keys.map(this.describeObject).join(', ') || 'none'
-            }.`,
-        true
+    const keys = this.keyEntries(module, session, {});
+    const pairings = this.pair(certificates, keys);
+
+    if (!pairings.length) {
+      throw this.noKeyForCertificates(token, certificates);
+    }
+
+    const chosen = this.choose(pairings);
+
+    if (!chosen) {
+      throw this.ambiguousCertificates(
+        token,
+        cert,
+        pairings.map(({ certificate }: Pairing) => certificate)
       );
     }
 
-    this.assertKeyUriIsUnique(module, session, key);
-
-    return key;
+    return chosen;
   }
 
-  private selectExplicitKey(
-    cert: Pkcs11Cert,
-    keys: Pkcs11PrivateKeyInfo[]
-  ): Pkcs11PrivateKeyInfo | undefined {
-    if (keys.length > 1) {
-      const hint =
-        cert.object !== undefined && cert.id !== undefined
-          ? 'the OpenSSL provider cannot tell them apart'
-          : 'set both "object" and "id" to choose one';
+  /** @returns the certificates that have a private key on the token, with that key. */
+  private pair(
+    certificates: Pkcs11CertificateInfo[],
+    keys: KeyEntry[]
+  ): Pairing[] {
+    return certificates
+      .map((certificate: Pkcs11CertificateInfo) => ({
+        certificate,
+        key: this.keyOf(certificate, keys)
+      }))
+      .filter((pairing): pairing is Pairing => !!pairing.key);
+  }
 
-      throw new Pkcs11Error(
-        Pkcs11ErrorCode.KEY_NOT_FOUND,
-        `Several private keys have ${this.describeSelector(cert)}: ${keys
-          .map(this.describeObject)
-          .join(', ')}; ${hint}.`,
-        true
+  // CKA_ID shared by a key and its certificate is a PKCS#11 convention only;
+  // equal public keys prove the pair.
+  private keyOf(
+    certificate: Pkcs11CertificateInfo,
+    keys: KeyEntry[]
+  ): Pkcs11PrivateKeyInfo | undefined {
+    const publicKey = Pkcs11PublicKey.fromCertificate(certificate.value);
+    const sameId = keys.filter(
+      ({ key }: KeyEntry) =>
+        !!certificate.id?.length && !!key.id?.equals(certificate.id)
+    );
+    const proven = publicKey
+      ? keys.filter((entry: KeyEntry) => entry.publicKey?.equals(publicKey))
+      : [];
+
+    if (proven.length) {
+      const preferred = proven.filter((entry: KeyEntry) =>
+        sameId.includes(entry)
       );
+
+      return this.only(preferred.length ? preferred : proven)?.key;
     }
 
-    return keys[0];
+    // A key whose public half the token hides can only be matched by id.
+    return this.only(
+      sameId.filter((entry: KeyEntry) => !publicKey || !entry.publicKey)
+    )?.key;
+  }
+
+  private choose(pairings: Pairing[]): Pairing | undefined {
+    if (pairings.length === 1) {
+      return pairings[0];
+    }
+
+    // YubiKeys expose a generated attestation certificate under each key's
+    // id, holding that key's public key, next to the certificate in the slot.
+    const paired = pairings.filter(
+      ({ certificate, key }: Pairing) =>
+        certificate.label !== undefined &&
+        this.certificateLabelsFor(key).includes(certificate.label)
+    );
+
+    if (paired.length === 1) {
+      return paired[0];
+    }
+
+    return this.only(
+      (paired.length ? paired : pairings).filter(({ certificate }: Pairing) =>
+        Pkcs11Preflight.PIV_AUTH_CERT_LABEL.test(certificate.label ?? '')
+      )
+    );
+  }
+
+  // YKCS11 labels the key in a PIV slot "Private key for <slot>" and its
+  // certificate "X.509 Certificate for <slot>"; most other tokens reuse the label.
+  private certificateLabelsFor({ label }: Pkcs11PrivateKeyInfo): string[] {
+    if (!label) {
+      return [];
+    }
+
+    const slot = Pkcs11Preflight.PIV_KEY_LABEL_PATTERN.exec(label)?.[1];
+
+    return slot ? [`X.509 Certificate for ${slot}`, label] : [label];
+  }
+
+  private selectKeyForFile(
+    module: Pkcs11Module,
+    session: Buffer,
+    token: Pkcs11Token,
+    cert: Pkcs11Cert,
+    certFile: Buffer | undefined
+  ): Pkcs11PrivateKeyInfo {
+    const keys = this.keyEntries(module, session, this.selector(cert));
+    const publicKey = certFile
+      ? Pkcs11PublicKey.fromCertificate(certFile)
+      : undefined;
+    const proven = publicKey
+      ? keys.filter((entry: KeyEntry) => entry.publicKey?.equals(publicKey))
+      : [];
+    // "id" and "label" narrow these down when the public halves are hidden.
+    const candidates = proven.length
+      ? proven
+      : keys.filter((entry: KeyEntry) => !publicKey || !entry.publicKey);
+    const chosen =
+      this.only(candidates) ??
+      this.only(
+        candidates.filter(
+          ({ key }: KeyEntry) => key.label === Pkcs11Preflight.PIV_KEY_LABEL
+        )
+      );
+
+    if (chosen) {
+      return chosen.key;
+    }
+
+    throw candidates.length
+      ? this.ambiguousKeys(
+          token,
+          cert,
+          candidates.map(({ key }: KeyEntry) => key)
+        )
+      : new Pkcs11Error(
+          Pkcs11ErrorCode.KEY_NOT_FOUND,
+          keys.length
+            ? `No private key on token "${
+                token.label
+              }" holds the public key of the certificate in ${
+                cert.cert
+              }. Keys found:\n${this.list(
+                keys.map(({ key }: KeyEntry) => this.describeObject(key))
+              )}`
+            : `No private key${this.describeSelector(cert)} on token "${
+                token.label
+              }".`,
+          true
+        );
   }
 
   // The key URI carries only the key's id and label, so the provider would
@@ -481,105 +617,188 @@ export class Pkcs11Preflight {
     }
   }
 
-  private selectKeyAutomatically(
+  private keyEntries(
     module: Pkcs11Module,
     session: Buffer,
+    filter: Pkcs11ObjectFilter
+  ): KeyEntry[] {
+    return module
+      .findPrivateKeys(session, filter)
+      .map((key: Pkcs11PrivateKeyInfo) => ({
+        key,
+        publicKey: Pkcs11PublicKey.fromAttributes(
+          module.publicKeyAttributes(session, key)
+        )
+      }));
+  }
+
+  private selector(cert: Pkcs11Cert): Pkcs11ObjectFilter {
+    return {
+      label: cert.label,
+      id: cert.id ? Buffer.from(cert.id, 'hex') : undefined
+    };
+  }
+
+  private only<T>(items: T[]): T | undefined {
+    return items.length === 1 ? items[0] : undefined;
+  }
+
+  private noCertificate(
+    module: Pkcs11Module,
+    session: Buffer,
+    token: Pkcs11Token,
+    cert: Pkcs11Cert
+  ): Pkcs11Error {
+    const all = module.findCertificates(session, {});
+    const field = this.distinguishingField(all);
+    const usable = this.pair(all, this.keyEntries(module, session, {}));
+    const example =
+      this.choose(usable)?.certificate ?? usable[0]?.certificate ?? all[0];
+    const message =
+      cert.label === undefined && cert.id === undefined
+        ? `Token "${token.label}" holds no certificates. Set "cert" to a PEM file with the certificate for ${cert.hostname}.`
+        : [
+            `No certificate${this.describeSelector(cert)} on token "${
+              token.label
+            }".`,
+            ...(all.length
+              ? [
+                  'Certificates on the token:',
+                  this.list(all.map((c) => this.describeCertificate(c))),
+                  field
+                    ? this.restartHint(
+                        { ...cert, label: undefined, id: undefined },
+                        field,
+                        example
+                      )
+                    : ''
+                ]
+              : [])
+          ]
+            .filter(Boolean)
+            .join('\n');
+
+    return new Pkcs11Error(Pkcs11ErrorCode.KEY_NOT_FOUND, message, true);
+  }
+
+  private noKeyForCertificates(
+    token: Pkcs11Token,
+    certificates: Pkcs11CertificateInfo[]
+  ): Pkcs11Error {
+    return new Pkcs11Error(
+      Pkcs11ErrorCode.KEY_NOT_FOUND,
+      certificates.length === 1
+        ? `No private key on token "${
+            token.label
+          }" holds the public key of certificate ${this.describeCertificate(
+            certificates[0]
+          )}.`
+        : `No private key on token "${
+            token.label
+          }" holds the public key of any of these certificates:\n${this.list(
+            certificates.map((c) => this.describeCertificate(c))
+          )}`,
+      true
+    );
+  }
+
+  private ambiguousCertificates(
+    token: Pkcs11Token,
+    cert: Pkcs11Cert,
+    certificates: Pkcs11CertificateInfo[]
+  ): Pkcs11Error {
+    const field = this.distinguishingField(certificates);
+
+    return new Pkcs11Error(
+      Pkcs11ErrorCode.KEY_NOT_FOUND,
+      [
+        `Several certificates on token "${token.label}" can be used for ${cert.hostname}:`,
+        this.list(certificates.map((c) => this.describeCertificate(c))),
+        field
+          ? this.restartHint(cert, field, certificates[0])
+          : `Their labels and ids are the same; set "cert" to a PEM file with the one ${cert.hostname} accepts and restart the Repeater.`
+      ].join('\n'),
+      true
+    );
+  }
+
+  private ambiguousKeys(
+    token: Pkcs11Token,
     cert: Pkcs11Cert,
     keys: Pkcs11PrivateKeyInfo[]
-  ): Pkcs11PrivateKeyInfo | undefined {
-    const usable =
-      cert.cert === 'token'
-        ? keys.filter((key: Pkcs11PrivateKeyInfo) =>
-            this.hasCertificate(module, session, key)
-          )
-        : keys;
+  ): Pkcs11Error {
+    const field = this.distinguishingField(keys);
 
-    if (usable.length === 1) {
-      return usable[0];
+    return new Pkcs11Error(
+      Pkcs11ErrorCode.KEY_NOT_FOUND,
+      [
+        `Several private keys on token "${token.label}" may belong to the certificate in ${cert.cert}, and the token does not expose their public keys to tell:`,
+        this.list(keys.map(this.describeObject)),
+        field
+          ? this.restartHint(cert, field, keys[0])
+          : 'Their labels and ids are the same; the Repeater cannot use this token.'
+      ].join('\n'),
+      true
+    );
+  }
+
+  // "label" reads best; the id is the fallback for objects without unique labels.
+  private distinguishingField(
+    objects: Pkcs11ObjectInfo[]
+  ): 'label' | 'id' | undefined {
+    const unique = (values: (string | undefined)[]) =>
+      values.every(Boolean) && new Set(values).size === values.length;
+
+    if (unique(objects.map(({ label }: Pkcs11ObjectInfo) => label))) {
+      return 'label';
     }
 
-    return keys.find(
-      ({ label }: Pkcs11PrivateKeyInfo) =>
-        label === Pkcs11Preflight.PIV_KEY_LABEL
-    );
+    if (
+      unique(
+        objects.map(({ id }: Pkcs11ObjectInfo) => id?.toString('hex') || '')
+      )
+    ) {
+      return 'id';
+    }
+
+    return undefined;
   }
 
-  private hasCertificate(
-    module: Pkcs11Module,
-    session: Buffer,
-    key: Pkcs11PrivateKeyInfo
-  ): boolean {
-    return (
-      !!key.id?.length &&
-      module.findCertificates(session, { id: key.id }).length > 0
-    );
-  }
-
-  private selectCertificate(
-    module: Pkcs11Module,
-    session: Buffer,
+  private restartHint(
     cert: Pkcs11Cert,
-    key: Pkcs11PrivateKeyInfo
-  ): Pkcs11CertificateInfo {
-    const labels = this.certificateLabelsFor(key);
-    const byId = key.id?.length
-      ? module.findCertificates(session, { id: key.id })
-      : [];
-    const candidates = byId.length
-      ? byId
-      : labels.flatMap((label: string) =>
-          module.findCertificates(session, { label })
-        );
+    field: 'label' | 'id',
+    example: Pkcs11ObjectInfo
+  ): string {
+    const entry = {
+      hostname: cert.hostname,
+      port: cert.port,
+      pinFile: cert.pinFile,
+      pinEnv: cert.pinEnv,
+      token: cert.token,
+      id: cert.id,
+      label: cert.label,
+      [field]: field === 'id' ? example.id?.toString('hex') : example.label,
+      cert: cert.cert === 'token' ? undefined : cert.cert,
+      maxConcurrency:
+        cert.maxConcurrency === 1 ? undefined : cert.maxConcurrency
+    };
 
-    if (!candidates.length) {
-      throw new Pkcs11Error(
-        Pkcs11ErrorCode.KEY_NOT_FOUND,
-        `No certificate for key ${this.describeObject(
-          key
-        )} on the token; set "cert" to a PEM file for ${cert.hostname}.`,
-        true
-      );
-    }
-
-    // YubiKeys also expose a generated attestation certificate under the
-    // key's id, with the same public key and a far later expiry.
-    const paired =
-      candidates.length > 1
-        ? candidates.filter(
-            ({ label }: Pkcs11CertificateInfo) =>
-              label !== undefined && labels.includes(label)
-          )
-        : candidates;
-
-    if (paired.length !== 1) {
-      throw new Pkcs11Error(
-        Pkcs11ErrorCode.KEY_NOT_FOUND,
-        `Several certificates belong to key ${this.describeObject(
-          key
-        )}: ${candidates
-          .map((candidate: Pkcs11CertificateInfo) =>
-            this.describeCertificate(candidate)
-          )
-          .join(', ')}; set "cert" to a PEM file with the one ${
-          cert.hostname
-        } accepts.`,
-        true
-      );
-    }
-
-    return paired[0];
+    return `Choose one with "${field}" and restart the Repeater, for example:\n  --pkcs11-cert ${this.quoteArgument(
+      JSON.stringify(entry)
+    )}`;
   }
 
-  // YKCS11 labels the key in a PIV slot "Private key for <slot>" and its
-  // certificate "X.509 Certificate for <slot>"; most other tokens reuse the label.
-  private certificateLabelsFor({ label }: Pkcs11PrivateKeyInfo): string[] {
-    if (!label) {
-      return [];
-    }
+  // Windows: CommandLineToArgvW reads backslashes literally except before a quote.
+  private quoteArgument(value: string): string {
+    return this.platform === 'win32'
+      ? `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`
+      : `'${value.replace(/'/g, `'\\''`)}'`;
+  }
 
-    const slot = Pkcs11Preflight.PIV_KEY_LABEL_PATTERN.exec(label)?.[1];
-
-    return slot ? [`X.509 Certificate for ${slot}`, label] : [label];
+  private list(lines: string[]): string {
+    return lines
+      .map((line: string, index: number) => `  ${index + 1}. ${line}`)
+      .join('\n');
   }
 
   private pin(cert: Pkcs11Cert): string {
@@ -642,13 +861,14 @@ export class Pkcs11Preflight {
     }
   }
 
+  /** @returns "" without a selector, otherwise ` with label "…" and id …`. */
   private describeSelector(cert: Pkcs11Cert): string {
-    return [
-      cert.object ? `label "${cert.object}"` : '',
-      cert.id ? `id ${cert.id}` : ''
-    ]
-      .filter(Boolean)
-      .join(' and ');
+    const parts = [
+      cert.label !== undefined ? `label "${cert.label}"` : '',
+      cert.id !== undefined ? `id ${cert.id}` : ''
+    ].filter(Boolean);
+
+    return parts.length ? ` with ${parts.join(' and ')}` : '';
   }
 
   private describeObject = ({ label, id }: Pkcs11ObjectInfo): string =>
@@ -663,9 +883,9 @@ export class Pkcs11Preflight {
       );
       const oneLine = (name: string) => name.split('\n').join(', ');
 
-      return `${object} [subject "${oneLine(subject)}", issuer "${oneLine(
+      return `${object}, subject "${oneLine(subject)}", issuer "${oneLine(
         issuer
-      )}", valid to ${validTo}]`;
+      )}", valid until ${validTo}`;
     } catch {
       return object;
     }

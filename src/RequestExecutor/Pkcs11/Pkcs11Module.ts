@@ -24,6 +24,15 @@ export interface Pkcs11ObjectFilter {
   id?: Buffer;
 }
 
+/** Raw public-key attributes; which ones are set depends on the key type and the token. */
+export interface Pkcs11PublicKeyAttributes {
+  modulus?: Buffer;
+  publicExponent?: Buffer;
+  /** DER-encoded named-curve OID. */
+  ecParams?: Buffer;
+  ecPoint?: Buffer;
+}
+
 /**
  * The subset of a PKCS#11 module the pre-flight needs. Keeps the native
  * binding behind an interface so the selection logic is testable.
@@ -43,6 +52,14 @@ export interface Pkcs11Module {
     session: Buffer,
     filter: Pkcs11ObjectFilter
   ): Pkcs11CertificateInfo[];
+  /**
+   * The public half of a private key, read from the key itself or from the
+   * public key object with its id. Empty when the token exposes neither.
+   */
+  publicKeyAttributes(
+    session: Buffer,
+    key: Pkcs11PrivateKeyInfo
+  ): Pkcs11PublicKeyAttributes;
 }
 
 export interface Pkcs11ModuleLoader {

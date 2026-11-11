@@ -10,9 +10,13 @@ export interface Pkcs11Cert {
   pinEnv?: string;
   /** Token label; when absent the only token present is used. */
   token?: string;
-  /** Key/cert label. When neither `object` nor `id` is set, the key is selected at startup. */
-  object?: string;
-  /** Hex-encoded CKA_ID. */
+  /**
+   * CKA_LABEL of the certificate on the token. With a PEM file in `cert`,
+   * the private key's label instead, needed only when the token does not
+   * expose the key's public half.
+   */
+  label?: string;
+  /** Hex-encoded CKA_ID, with the same scope as `label`. */
   id?: string;
   /** `"token"` reads the certificate from the token; any other value is a PEM file path. */
   cert: string;

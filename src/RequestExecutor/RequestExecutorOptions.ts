@@ -24,6 +24,7 @@ export interface RequestExecutorOptions {
   proxyDomains?: string[];
   proxyDomainsBypass?: string[];
   kerberos?: KerberosOptions;
+  proxyTargetAttribution?: boolean;
 }
 
 export const RequestExecutorOptions: unique symbol = Symbol(

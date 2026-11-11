@@ -121,6 +121,12 @@ export class RunRepeater implements CommandModule {
         boolean: true,
         describe: 'Configure ntlm support (enables TCP connection reuse)'
       })
+      .option('proxy-target-attribution', {
+        boolean: true,
+        default: false,
+        describe:
+          'Send the entry point, scan and discovery IDs of each request to the --proxy-target proxy only, as X-Bright-Entry-Point-Id, X-Bright-Scan-Id and X-Bright-Discovery-Id headers'
+      })
       .option('kerberos', {
         boolean: true,
         describe: 'Enable Kerberos/SPNEGO authentication for target requests'
@@ -268,6 +274,8 @@ export class RunRepeater implements CommandModule {
               headers: (args.header ?? args.headers) as Record<string, string>,
               timeout: args.timeout as number,
               proxyUrl: (args.proxyTarget ?? args.proxy) as string,
+              proxyTargetAttribution:
+                !!args.proxyTargetAttribution && !!args.proxyTarget,
               certs: args.cert as Cert[],
               maxBodySize: Infinity,
               maxContentLength: 100,

@@ -18,6 +18,7 @@ import {
   CurlAuth,
   CurlFeature,
   CurlGssApi,
+  CurlHeader,
   HeaderInfo,
   Multi
 } from '@brightsec/node-libcurl';
@@ -44,6 +45,7 @@ export class HttpRequestExecutor implements RequestExecutor {
   private readonly proxyDomainsBypass?: RegExp[];
   private readonly kerberosDomains?: RegExp[];
   private readonly sharedMulti = new Multi();
+  private readonly ATTRIBUTION_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 
   get protocol(): Protocol {
     return Protocol.HTTP;
@@ -220,6 +222,7 @@ export class HttpRequestExecutor implements RequestExecutor {
 
     if (proxyUrl) {
       curl.setOpt('PROXY', proxyUrl);
+      this.applyCurlProxyAttribution(curl, options);
     }
 
     curl.setOpt('NOBODY', options.method === 'HEAD');
@@ -403,6 +406,25 @@ export class HttpRequestExecutor implements RequestExecutor {
     }
 
     return result;
+  }
+
+  private applyCurlProxyAttribution(curl: Curl, options: Request): void {
+    if (!this.options.proxyTargetAttribution) return;
+
+    const headers = Object.entries({
+      'X-Bright-Entry-Point-Id': options.entryPointId,
+      'X-Bright-Scan-Id': options.scanId,
+      'X-Bright-Discovery-Id': options.discoveryId
+    })
+      .filter(([, value]: [string, string | undefined]) =>
+        this.ATTRIBUTION_ID_PATTERN.test(value ?? '')
+      )
+      .map(([name, value]: [string, string]) => `${name}: ${value}`);
+
+    if (!headers.length) return;
+
+    curl.setOpt('HEADEROPT', CurlHeader.Separate);
+    curl.setOpt('PROXYHEADER', headers);
   }
 
   private resolveProxy(options: Request): string | undefined {

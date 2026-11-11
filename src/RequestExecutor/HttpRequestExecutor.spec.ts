@@ -110,6 +110,55 @@ async function startServer(
   });
 }
 
+/**
+ * A forward proxy that records what it receives and, like the traffic sidecar,
+ * removes the attribution headers before forwarding a plain HTTP request.
+ */
+async function startProxy(): Promise<{
+  proxyUrl: string;
+  requests: http.IncomingHttpHeaders[];
+  connects: http.IncomingHttpHeaders[];
+}> {
+  const requests: http.IncomingHttpHeaders[] = [];
+  const connects: http.IncomingHttpHeaders[] = [];
+  const server = http.createServer((req, res) => {
+    requests.push(req.headers);
+    const headers = { ...req.headers };
+    delete headers['x-bright-entry-point-id'];
+    delete headers['x-bright-scan-id'];
+    delete headers['x-bright-discovery-id'];
+    const upstream = http.request(
+      new URL(req.url, `http://${req.headers.host}`),
+      { method: req.method, headers },
+      (upstreamRes) => {
+        res.writeHead(upstreamRes.statusCode, upstreamRes.headers);
+        upstreamRes.pipe(res);
+      }
+    );
+    req.pipe(upstream);
+  });
+  server.on('connect', (req, socket: net.Socket, head) => {
+    connects.push(req.headers);
+    const target: URL = new URL(`http://${req.url}`);
+    const upstream = net.connect(+target.port, target.hostname, () => {
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      upstream.write(head);
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+    });
+    upstream.on('error', () => socket.destroy());
+    upstream.on('close', () => socket.destroy());
+    socket.on('close', () => upstream.destroy());
+    socket.on('error', () => upstream.destroy());
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  serversToClose.push(server);
+  const { port } = server.address() as AddressInfo;
+
+  return { proxyUrl: `http://127.0.0.1:${port}`, requests, connects };
+}
+
 /** Returns the first line (request-line) of a raw HTTP request string. */
 function extractRequestLine(raw: string): string {
   return raw.split('\r\n')[0];
@@ -2286,5 +2335,156 @@ describe('HttpRequestExecutor', () => {
         withinBudget: mean < MAX_MEAN_LATENCY_MS
       }).toEqual(expect.objectContaining({ withinBudget: true }));
     }, 60000);
+  });
+  describe('proxy target attribution', () => {
+    const ids = {
+      entryPointId: 'ep-1',
+      scanId: 'scan.2',
+      discoveryId: 'disc_3'
+    };
+    const attribution = {
+      'x-bright-entry-point-id': 'ep-1',
+      'x-bright-scan-id': 'scan.2',
+      'x-bright-discovery-id': 'disc_3'
+    };
+
+    const startTarget = async () => {
+      const received: http.IncomingHttpHeaders[] = [];
+      const { baseUrl } = await startServer((req, res) => {
+        received.push(req.headers);
+        res.end('ok');
+      });
+
+      return { baseUrl, received };
+    };
+
+    it('should send the ids to the proxy only', async () => {
+      // arrange
+      const target = await startTarget();
+      const proxy = await startProxy();
+      const sut = buildSut({
+        proxyUrl: proxy.proxyUrl,
+        proxyTargetAttribution: true
+      });
+      const { request } = createRequest({ url: `${target.baseUrl}/`, ...ids });
+
+      // act
+      const response = await sut.execute(request);
+
+      // assert
+      expect(response.statusCode).toBe(200);
+      expect(proxy.requests).toEqual([expect.objectContaining(attribution)]);
+      expect(target.received[0]).not.toHaveProperty('x-bright-entry-point-id');
+      expect(target.received[0]).not.toHaveProperty('x-bright-scan-id');
+      expect(target.received[0]).not.toHaveProperty('x-bright-discovery-id');
+    });
+
+    it('should send only the ids that are valid', async () => {
+      // arrange
+      const target = await startTarget();
+      const proxy = await startProxy();
+      const sut = buildSut({
+        proxyUrl: proxy.proxyUrl,
+        proxyTargetAttribution: true
+      });
+      const { request } = createRequest({
+        url: `${target.baseUrl}/`,
+        entryPointId: 'ep 1\r\nx-injected: 1',
+        scanId: 'scan.2',
+        discoveryId: 'x'.repeat(129)
+      });
+
+      // act
+      await sut.execute(request);
+
+      // assert
+      expect(proxy.requests[0]).toMatchObject({ 'x-bright-scan-id': 'scan.2' });
+      expect(proxy.requests[0]).not.toHaveProperty('x-bright-entry-point-id');
+      expect(proxy.requests[0]).not.toHaveProperty('x-bright-discovery-id');
+      expect(proxy.requests[0]).not.toHaveProperty('x-injected');
+    });
+
+    it('should not send the ids to the proxy without the option', async () => {
+      // arrange
+      const target = await startTarget();
+      const proxy = await startProxy();
+      const sut = buildSut({ proxyUrl: proxy.proxyUrl });
+      const { request } = createRequest({ url: `${target.baseUrl}/`, ...ids });
+
+      // act
+      await sut.execute(request);
+
+      // assert
+      expect(proxy.requests[0]).not.toHaveProperty('x-bright-entry-point-id');
+      expect(proxy.requests[0]).not.toHaveProperty('x-bright-scan-id');
+      expect(proxy.requests[0]).not.toHaveProperty('x-bright-discovery-id');
+    });
+
+    it.each([
+      { name: 'there is no proxy', options: {} },
+      {
+        name: 'the host bypasses the proxy',
+        options: { proxyDomainsBypass: ['127.0.0.1'] }
+      }
+    ])('should send nothing when $name', async ({ options }) => {
+      // arrange
+      const target = await startTarget();
+      const proxy = await startProxy();
+      const sut = buildSut({
+        proxyUrl: 'proxyDomainsBypass' in options ? proxy.proxyUrl : undefined,
+        proxyTargetAttribution: true,
+        ...options
+      });
+      const { request } = createRequest({ url: `${target.baseUrl}/`, ...ids });
+
+      // act
+      const response = await sut.execute(request);
+
+      // assert
+      expect(response.statusCode).toBe(200);
+      expect(proxy.requests).toEqual([]);
+      expect(target.received[0]).not.toHaveProperty('x-bright-entry-point-id');
+      expect(target.received[0]).not.toHaveProperty('x-bright-scan-id');
+      expect(target.received[0]).not.toHaveProperty('x-bright-discovery-id');
+    });
+
+    it('should send the ids only on CONNECT for an https target', async () => {
+      // arrange
+      const tunneled: Buffer[] = [];
+      const target = net.createServer((socket) => {
+        socket.on('data', (chunk) => {
+          tunneled.push(chunk);
+          socket.destroy();
+        });
+      });
+      target.listen(0, '127.0.0.1');
+      await once(target, 'listening');
+      const { port } = target.address() as AddressInfo;
+      const proxy = await startProxy();
+      const sut = buildSut({
+        proxyUrl: proxy.proxyUrl,
+        proxyTargetAttribution: true,
+        timeout: 5000
+      });
+      const { request } = createRequest({
+        url: `https://127.0.0.1:${port}/`,
+        ...ids
+      });
+
+      try {
+        // act
+        await sut.execute(request);
+
+        // assert
+        expect(proxy.connects).toEqual([expect.objectContaining(attribution)]);
+        expect(proxy.requests).toEqual([]);
+        expect(Buffer.concat(tunneled).toString('latin1')).not.toMatch(
+          /x-bright/i
+        );
+        expect(tunneled[0]?.[0]).toBe(0x16);
+      } finally {
+        target.close();
+      }
+    });
   });
 });

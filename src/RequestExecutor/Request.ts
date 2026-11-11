@@ -19,6 +19,9 @@ export interface RequestOptions {
   timeout?: number;
   decompress?: boolean;
   keepAlive?: boolean;
+  entryPointId?: string;
+  scanId?: string;
+  discoveryId?: string;
 }
 
 export interface Cert {
@@ -55,6 +58,9 @@ export class Request {
   public readonly decompress?: boolean;
   public readonly timeout?: number;
   public readonly keepAlive?: boolean;
+  public readonly entryPointId?: string;
+  public readonly scanId?: string;
+  public readonly discoveryId?: string;
 
   private _method: string;
 
@@ -104,7 +110,10 @@ export class Request {
     encoding,
     decompress = true,
     headers = {},
-    keepAlive
+    keepAlive,
+    entryPointId,
+    scanId,
+    discoveryId
   }: RequestOptions) {
     this.protocol = protocol;
     this._method = method?.toUpperCase() ?? 'GET';
@@ -134,6 +143,9 @@ export class Request {
     this.maxContentSize = maxContentSize;
     this.decompress = !!decompress;
     this.keepAlive = keepAlive;
+    this.entryPointId = entryPointId;
+    this.scanId = scanId;
+    this.discoveryId = discoveryId;
   }
 
   public setHeaders(headers: Record<string, string | string[]>): void {
@@ -205,7 +217,10 @@ export class Request {
       maxContentSize: this.maxContentSize,
       timeout: this.timeout,
       decompress: this.decompress,
-      keepAlive: this.keepAlive
+      keepAlive: this.keepAlive,
+      entryPointId: this.entryPointId,
+      scanId: this.scanId,
+      discoveryId: this.discoveryId
     };
   }
 

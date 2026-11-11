@@ -4,6 +4,7 @@ import {
   Pkcs11ModuleError,
   Pkcs11ObjectFilter,
   Pkcs11PrivateKeyInfo,
+  Pkcs11PublicKeyAttributes,
   Pkcs11Token
 } from './Pkcs11Module';
 import type { AttributeResult, PKCS11, Template } from 'pkcs11js';
@@ -114,6 +115,48 @@ export class Pkcs11jsModule implements Pkcs11Module {
         return { handle, label: label?.toString(), id, value };
       }
     );
+  }
+
+  public publicKeyAttributes(
+    session: Buffer,
+    key: Pkcs11PrivateKeyInfo
+  ): Pkcs11PublicKeyAttributes {
+    const [modulus, publicExponent, ecParams]: (Buffer | undefined)[] =
+      this.attributes(session, key.handle, [
+        this.binding.CKA_MODULUS,
+        this.binding.CKA_PUBLIC_EXPONENT,
+        this.binding.CKA_EC_PARAMS
+      ]);
+
+    if (modulus?.length && publicExponent?.length) {
+      return { modulus, publicExponent };
+    }
+
+    // CKA_EC_POINT is defined only on public key objects.
+    const handles = key.id?.length
+      ? this.find(session, this.binding.CKO_PUBLIC_KEY, { id: key.id })
+      : [];
+
+    if (handles.length !== 1) {
+      return { ecParams };
+    }
+
+    const [publicModulus, publicKeyExponent, publicEcParams, ecPoint]: (
+      | Buffer
+      | undefined
+    )[] = this.attributes(session, handles[0], [
+      this.binding.CKA_MODULUS,
+      this.binding.CKA_PUBLIC_EXPONENT,
+      this.binding.CKA_EC_PARAMS,
+      this.binding.CKA_EC_POINT
+    ]);
+
+    return {
+      modulus: publicModulus,
+      publicExponent: publicKeyExponent,
+      ecParams: ecParams ?? publicEcParams,
+      ecPoint
+    };
   }
 
   private find(

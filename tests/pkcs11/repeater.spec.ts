@@ -9,6 +9,7 @@ const env = {
   pkiDir: process.env.PKCS11_TEST_DIR,
   module: process.env.PKCS11_TEST_MODULE,
   token: process.env.PKCS11_TEST_TOKEN,
+  object: process.env.PKCS11_TEST_OBJECT,
   pin: process.env.PKCS11_TEST_PIN,
   provider: process.env.PKCS11_TEST_PROVIDER_LIB
 };
@@ -131,6 +132,41 @@ describe('HttpRequestExecutor', () => {
       expect(result.responses.map(({ statusCode }) => statusCode)).toEqual([
         200, 200, 200, 200, 200
       ]);
+    });
+
+    it('should send the certificate selected by "label"', async () => {
+      // act
+      const result = await run({
+        urls: urls(1),
+        pkcs11: {
+          certs: [cert({ label: env.object })],
+          module: env.module,
+          provider: env.provider
+        }
+      });
+
+      // assert
+      expect(result.responses[0]).toMatchObject({ statusCode: 200 });
+      expect(JSON.parse(result.responses[0].body)).toMatchObject({
+        subject: 'bright-pkcs11-client'
+      });
+    });
+
+    it('should send exactly the certificate "label" selects, even one the target rejects', async () => {
+      // act
+      const result = await run({
+        urls: urls(1),
+        pkcs11: {
+          certs: [cert({ label: `${env.object} attestation` })],
+          module: env.module,
+          provider: env.provider
+        }
+      });
+
+      // assert
+      expect(result.responses[0].statusCode).toBeUndefined();
+      expect(result.responses[0].errorCode).toBeDefined();
+      expect(target.stats().requests).toBe(0);
     });
 
     it('should report a wrong PIN on every request after a single login attempt', async () => {

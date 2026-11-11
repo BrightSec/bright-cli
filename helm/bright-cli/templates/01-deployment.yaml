@@ -50,7 +50,7 @@ spec:
             {{- range $cert := $pkcs11.certs }}
             {{- $entry := deepCopy $cert }}
             {{- /* YAML and --set turn values such as token: 1234 into numbers, which the Repeater rejects. */}}
-            {{- range $field := list "hostname" "token" "object" "id" "cert" "pinFile" "pinEnv" }}
+            {{- range $field := list "hostname" "token" "label" "id" "cert" "pinFile" "pinEnv" }}
             {{- if hasKey $entry $field }}
             {{- $_ := set $entry $field (toString (get $entry $field)) }}
             {{- end }}

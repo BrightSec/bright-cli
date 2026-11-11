@@ -82,7 +82,8 @@ repeater:
       # - hostname: example.com
       #   port: 443
       #   token: "My Card"
-      #   id: "01"
+      #   label: "Certificate for PIV Authentication"
+      #   # or by CKA_ID: id: "01"
     # Existing Secret holding the token PIN, mounted as a file readable through
     # podSecurityContext.fsGroup; keep fsGroup set when overriding it.
     pinSecret:

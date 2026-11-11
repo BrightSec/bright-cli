@@ -45,7 +45,7 @@ describe('Pkcs11CertParser', () => {
           port: undefined,
           pinFile,
           token: undefined,
-          object: undefined,
+          label: undefined,
           id: undefined,
           cert: 'token',
           maxConcurrency: 1
@@ -60,7 +60,7 @@ describe('Pkcs11CertParser', () => {
         port: 8443,
         pinEnv: 'CARD_PIN',
         token: 'Alice PIV',
-        object: 'tls-client',
+        label: 'tls-client',
         id: 'AB01',
         cert: certFile,
         maxConcurrency: 2
@@ -78,7 +78,7 @@ describe('Pkcs11CertParser', () => {
           port: '8443',
           pinEnv: 'CARD_PIN',
           token: 'Alice PIV',
-          object: 'tls-client',
+          label: 'tls-client',
           id: 'ab01',
           cert: certFile,
           maxConcurrency: 2
@@ -156,6 +156,11 @@ describe('Pkcs11CertParser', () => {
         'a literal PIN',
         { hostname: 'example.com', pinFile, pin: '1234' },
         /literal "pin" is not accepted/
+      ],
+      [
+        'the former key selector "object"',
+        { hostname: 'example.com', pinFile, object: 'client' },
+        /"object" was renamed to "label", which selects the certificate/
       ],
       [
         'a misspelled field',

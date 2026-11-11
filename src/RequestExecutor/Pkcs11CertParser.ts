@@ -17,7 +17,7 @@ export class Pkcs11CertParser {
     'pinFile',
     'pinEnv',
     'token',
-    'object',
+    'label',
     'id',
     'cert',
     'maxConcurrency'
@@ -155,7 +155,7 @@ export class Pkcs11CertParser {
       port: Pkcs11CertParser.port(raw),
       ...Pkcs11CertParser.pinSource(raw, env, daemon),
       token: Pkcs11CertParser.optionalString(raw, 'token'),
-      object: Pkcs11CertParser.optionalString(raw, 'object'),
+      label: Pkcs11CertParser.optionalString(raw, 'label'),
       id: Pkcs11CertParser.id(raw),
       cert: Pkcs11CertParser.cert(raw, daemon),
       maxConcurrency: Pkcs11CertParser.maxConcurrency(raw)
@@ -172,6 +172,13 @@ export class Pkcs11CertParser {
     if ('module' in raw) {
       throw new Error(
         '"module" is not a per-certificate field: all certificates share one PKCS#11 library. Set it once with --pkcs11-module.'
+      );
+    }
+
+    // Entries written for the former key selector get its replacement named.
+    if ('object' in raw) {
+      throw new Error(
+        '"object" was renamed to "label", which selects the certificate on the token by its label.'
       );
     }
 

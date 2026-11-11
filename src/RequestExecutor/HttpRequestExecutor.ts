@@ -24,14 +24,9 @@ import {
 } from '@brightsec/node-libcurl';
 import { parse as parseUrl } from 'node:url';
 
-type ScriptRequest = Pick<
-  RequestOptions,
-  'url' | 'method' | 'headers' | 'body'
->;
-
 type ScriptEntrypoint = (
-  options: ScriptRequest
-) => Promise<ScriptRequest> | ScriptRequest;
+  options: RequestOptions
+) => Promise<RequestOptions> | RequestOptions;
 
 type ResponseScriptEntrypoint = (options: {
   protocol: string;
@@ -597,30 +592,44 @@ export class HttpRequestExecutor implements RequestExecutor {
       return script;
     }
 
-    // The decoded view is lossy for bytes that are not valid UTF-8, so an
-    // untouched body is restored from the original instead.
+    // Scripts see a decoded, string view of the body. That view is lossy for
+    // bytes that are not valid UTF-8, so the original body and its encoding are
+    // restored whenever the script leaves the body untouched.
     const decodedBody = script.encoding
       ? iconv.encode(script.body, script.encoding).toString()
       : script.body;
 
+    const { entrypointId, scanId, discoveryId, ...options }: RequestOptions =
+      script.toJSON();
+
     const result = await vm.exec<ScriptEntrypoint>(
       this.DEFAULT_SCRIPT_ENTRYPOINT,
       {
-        url: script.url,
-        method: script.method,
-        headers: script.headers,
-        body: decodedBody
+        ...options,
+        body: decodedBody,
+        // The body handed to the script is already decoded, so reporting the
+        // original `encoding` would describe it incorrectly. Every other option
+        // round-trips verbatim.
+        encoding: undefined
       }
     );
+    // The script is handed the body already decoded and no `encoding`, so one it
+    // hands back is either absent or its own addition, and the lossy decoded
+    // view is all that is left of the body — restore both. Only a script that
+    // asks for an encoding the request did not already have is asking for its
+    // own body to be decoded, so pass that through.
+    const bodyUntouched = !!result && result.body === decodedBody;
+    const encodingUnchanged =
+      !result?.encoding || result.encoding === script.encoding;
+    const restoreOriginalBody = bodyUntouched && encodingUnchanged;
 
     return new Request({
-      ...script.toJSON(),
-      url: result.url,
-      method: result.method,
-      headers: result.headers,
-      ...(result.body === decodedBody
-        ? {}
-        : { body: result.body, encoding: undefined })
+      ...(restoreOriginalBody
+        ? { ...result, body: script.body, encoding: script.encoding }
+        : result),
+      entrypointId,
+      scanId,
+      discoveryId
     });
   }
 

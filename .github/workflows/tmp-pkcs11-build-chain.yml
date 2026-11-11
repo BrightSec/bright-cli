@@ -111,11 +111,28 @@ jobs:
       - name: Set distribution
         run: npx json -I -f package.json -e "this.brightCli.distribution='${{ matrix.target }}-executable'"
 
+      # The macOS runners are arm64, while the executable is x64: the addon
+      # npm built for the runner could not be loaded by it.
+      - name: Build the pkcs11js addon for x64
+        if: startsWith(matrix.os, 'macos')
+        working-directory: node_modules/pkcs11js
+        run: npx --yes node-gyp@11 rebuild --arch=x64
+
       # pkcs11js is an optional dependency: a failed native build would only
       # surface at runtime, as PKCS#11 missing from the executable.
       - name: Check the pkcs11js addon
         shell: bash
-        run: test -f node_modules/pkcs11js/build/Release/pkcs11.node
+        # The executables are x64: read the CPU type from the ELF, Mach-O or PE header.
+        run: |
+          node -e '
+            const b = require("fs").readFileSync("node_modules/pkcs11js/build/Release/pkcs11.node");
+            const arch =
+              b.readUInt32BE(0) === 0x7f454c46 ? (b.readUInt16LE(0x12) === 0x3e ? "x64" : "other")
+              : b.readUInt32LE(0) === 0xfeedfacf ? (b.readUInt32LE(4) === 0x01000007 ? "x64" : "other")
+              : b.readUInt16LE(b.readUInt32LE(0x3c) + 4) === 0x8664 ? "x64" : "other";
+            console.log("pkcs11.node:", arch);
+            if (arch !== "x64") process.exit(1);
+          '
 
       - name: Build executable file
         run: npm run build:pkg -- -t node24-${{ matrix.target }}-x64
@@ -156,9 +173,16 @@ jobs:
           unzip -q softhsm.zip
           unzip -q libp11.zip -d libp11
           curl -fsSLo libp11/COPYING https://raw.githubusercontent.com/OpenSC/libp11/libp11-0.4.21/COPYING
+          curl -fsSLo LICENSE-Apache-2.0.txt https://www.apache.org/licenses/LICENSE-2.0.txt
+          sha256sum -c - <<'EOF'
+          d80c9d084ebfb50ea1ed91bfbc2410d6ce542097a32c43b00781b83adcb8c77f  libp11/COPYING
+          cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  LICENSE-Apache-2.0.txt
+          EOF
 
       # The Repeater looks for pkcs11prov.dll next to its executable; the
-      # provider imports libcrypto-3-x64.dll, which Windows also finds there.
+      # provider imports libcrypto-3-x64.dll, which imports VCRUNTIME140.dll.
+      # Windows finds both next to the executable, so the VC++ redistributable
+      # does not have to be installed.
       - name: Assemble the smart-card bundle
         if: startsWith(matrix.os, 'win')
         shell: bash
@@ -170,9 +194,9 @@ jobs:
           OPENSSL_VERSION="$(strings "$OPENSSL_DIR/libcrypto-3-x64.dll" | grep -m1 -E '^OpenSSL 3\.[0-9]+\.[0-9]+')"
           mkdir -p smartcard
           cp bin/cli.exe smartcard/bright-cli.exe
-          cp .pkcs11-tools/libp11/pkcs11prov.dll "$OPENSSL_DIR/libcrypto-3-x64.dll" smartcard/
+          cp .pkcs11-tools/libp11/pkcs11prov.dll "$OPENSSL_DIR/libcrypto-3-x64.dll" /c/Windows/System32/vcruntime140.dll smartcard/
           cp .pkcs11-tools/libp11/COPYING smartcard/LICENSE-libp11.txt
-          curl -fsSLo smartcard/LICENSE-OpenSSL.txt https://www.apache.org/licenses/LICENSE-2.0.txt
+          cp .pkcs11-tools/LICENSE-Apache-2.0.txt smartcard/LICENSE-OpenSSL.txt
           cat > smartcard/THIRD-PARTY-NOTICES.txt <<EOF
           pkcs11prov.dll: OpenSSL PKCS#11 provider from libp11 0.4.21
             https://github.com/OpenSC/libp11/releases/tag/libp11-0.4.21
@@ -181,8 +205,30 @@ jobs:
           libcrypto-3-x64.dll: ${OPENSSL_VERSION}
             https://www.openssl.org/
             Apache License 2.0, see LICENSE-OpenSSL.txt.
+
+          vcruntime140.dll: Microsoft Visual C++ runtime, needed by libcrypto-3-x64.dll
+            Redistributed under the Microsoft Visual C++ Redistributable licence terms.
           EOF
           ls -l smartcard
+
+      # Every DLL the bundle loads must be in the bundle or part of Windows.
+      - name: Check the bundle's DLL dependencies
+        if: startsWith(matrix.os, 'win')
+        shell: bash
+        run: |
+          OBJDUMP="/c/Program Files/LLVM/bin/llvm-objdump.exe"
+          [ -x "$OBJDUMP" ] || OBJDUMP=$(command -v llvm-objdump || command -v objdump)
+          missing=0
+          for dll in smartcard/*.dll; do
+            for dep in $("$OBJDUMP" -p "$dll" | sed -n 's/^ *DLL Name: //p'); do
+              lower=$(echo "$dep" | tr 'A-Z' 'a-z')
+              case "$lower" in
+                kernel32.dll | advapi32.dll | user32.dll | crypt32.dll | ws2_32.dll | api-ms-win-*) ;;
+                *) [ -e "smartcard/$lower" ] || [ -e "smartcard/$dep" ] || { echo "$dll needs $dep, which is not in the bundle"; missing=1; } ;;
+              esac
+            done
+          done
+          exit $missing
 
       - name: Install OpenSC (pkcs11-tool)
         if: startsWith(matrix.os, 'win')
@@ -209,8 +255,11 @@ jobs:
           WORK="$(cygpath -m "$PWD/tests/pkcs11/.work")"
           echo 1234 > tests/pkcs11/.work/pin.txt
           echo 0000 > tests/pkcs11/.work/bad-pin.txt
-          npx ts-node tests/pkcs11/target.ts &
-          sleep 5
+          npx ts-node tests/pkcs11/target.ts > target.log 2>&1 &
+          TARGET=$!
+          trap 'kill $TARGET 2>/dev/null' EXIT
+          for _ in $(seq 60); do grep -q 'listening' target.log && break; sleep 1; done
+          grep -q 'listening' target.log || { cat target.log; exit 1; }
           NODE="$(command -v node)"
           # Only Node and Windows: an OpenSSL elsewhere on
           # PATH (Git, the runner image) must not hide a DLL missing from the bundle.

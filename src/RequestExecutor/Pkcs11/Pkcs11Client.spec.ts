@@ -61,6 +61,23 @@ describe('Pkcs11Client', () => {
       expect(env.PATH).toBe(`C:/Bright${delimiter}C:/Windows`);
     });
 
+    it('should not set the Windows-only variables on other platforms', () => {
+      // arrange
+      const env: NodeJS.ProcessEnv = { PATH: '/usr/bin' };
+
+      // act
+      new Pkcs11Client(
+        { module: '/opt/vendor.so', certs: [cert()] },
+        dependencies({ env, platform: 'linux' })
+      );
+
+      // assert
+      expect(env).toEqual({
+        PATH: '/usr/bin',
+        OPENSSL_CONF: '/tmp/x/openssl.cnf'
+      });
+    });
+
     it('should make OpenSSL read the live environment on Windows', () => {
       // arrange
       const env: NodeJS.ProcessEnv = {};

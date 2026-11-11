@@ -2279,6 +2279,7 @@ describe('HttpRequestExecutor', () => {
         connections.push(req.headers.connection ?? '');
         res.end('ok');
       });
+      const setOpt = jest.spyOn(Curl.prototype, 'setOpt');
       const create = jest.fn(() => new Curl());
       const pool = new CurlHandlePool(1, create);
       client.pool.mockReturnValue(pool);
@@ -2301,7 +2302,12 @@ describe('HttpRequestExecutor', () => {
         ]);
         expect(create).toHaveBeenCalledTimes(1);
         expect(connections).not.toContain('close');
+        // Each SSLENGINE reloads the OpenSSL config into the handle's context.
+        expect(
+          setOpt.mock.calls.filter(([name]: unknown[]) => name === 'SSLENGINE')
+        ).toHaveLength(1);
       } finally {
+        setOpt.mockRestore();
         await new Promise((resolve) => setImmediate(resolve));
         pool.close();
       }

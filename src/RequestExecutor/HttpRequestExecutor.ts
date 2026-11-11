@@ -58,6 +58,7 @@ export class HttpRequestExecutor implements RequestExecutor {
   private readonly kerberosDomains?: RegExp[];
   private readonly sharedMulti = new Multi();
   private readonly pkcs11?: Pkcs11Client;
+  private readonly pkcs11Engines = new WeakMap<Curl, string>();
 
   get protocol(): Protocol {
     return Protocol.HTTP;
@@ -368,13 +369,19 @@ export class HttpRequestExecutor implements RequestExecutor {
   }
 
   private applyCurlPkcs11(curl: Curl, identity: Pkcs11Identity): void {
-    try {
-      curl.setOpt('SSLENGINE', identity.provider);
-    } catch (e) {
-      throw new Pkcs11Error(
-        Pkcs11ErrorCode.MODULE_LOAD_FAILED,
-        `OpenSSL could not load the PKCS#11 provider "${identity.provider}": ${e?.message}`
-      );
+    // curl keeps the provider's library context across reset(), and every
+    // SSLENGINE reloads OPENSSL_CONF into it (leaking the path on Windows), so
+    // the engine is set only on a handle's first PKCS#11 request.
+    if (this.pkcs11Engines.get(curl) !== identity.provider) {
+      try {
+        curl.setOpt('SSLENGINE', identity.provider);
+      } catch (e) {
+        throw new Pkcs11Error(
+          Pkcs11ErrorCode.MODULE_LOAD_FAILED,
+          `OpenSSL could not load the PKCS#11 provider "${identity.provider}": ${e?.message}`
+        );
+      }
+      this.pkcs11Engines.set(curl, identity.provider);
     }
     curl.setOpt('SSLKEYTYPE', 'PROV');
     curl.setOpt('SSLKEY', identity.keyUri);

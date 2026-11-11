@@ -4,6 +4,8 @@ A software token ([SoftHSM2](https://github.com/softhsm/SoftHSMv2)) and an mTLS 
 
 `setup.sh` creates a throwaway token `bright-test` (user PIN `1234`) holding an RSA-2048 client key and its certificate, both labelled `client`. The private key exists only on the token. The target only accepts clients presenting a certificate issued by the test CA.
 
+Like a YubiKey's attestation certificate, a decoy `client attestation` shares the key's id `01` and public key, but comes from another CA and expires later. A provider that resolves the certificate by id alone picks the decoy, and the target rejects it.
+
 `tls-stack.spec.ts` checks that the `@brightsec/node-libcurl` binding can complete that handshake with the key on the token. `repeater.spec.ts` sends requests through the Repeater's `HttpRequestExecutor` with `--pkcs11-cert` options: login count, connection pooling, and the error codes for a wrong PIN or a missing token. Both run in CI on changes to this folder, to `src/RequestExecutor` or to `package-lock.json`.
 
 `repeater-smoke.ts` checks a built Repeater (executable, npm install or Docker image). It stands in for the Bright cloud on `localhost:8000`, sends the Repeater one request and checks the status code or `errorCode`:

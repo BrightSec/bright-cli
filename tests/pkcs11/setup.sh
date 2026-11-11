@@ -121,6 +121,15 @@ softhsm2-util --init-token --free --label "$TOKEN" --pin "$PIN" --so-pin "$SO_PI
 softhsm2-util --import "$(native "$PKI/client.pk8")" --token "$TOKEN" --label "$OBJECT" --id 01 --pin "$PIN" >/dev/null
 pkcs11-tool --module "$(native "$MODULE")" --token-label "$TOKEN" --login --pin "$PIN" \
   --write-object "$(native "$PKI/client.der")" --type cert --label "$OBJECT" --id 01 >/dev/null
+# A decoy under the same id, as a YubiKey's attestation certificate: same public
+# key, another issuer, a later expiry. A provider resolving "id=01" picks it.
+openssl x509 -in "$PKI/client.pem" -noout -pubkey > "$PKI/client.pub"
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "${SUBJ}CN=Bright PKCS11 Decoy CA" \
+  -keyout "$PKI/decoy-ca.key" -out "$PKI/decoy-ca.pem" 2>/dev/null
+openssl x509 -new -force_pubkey "$PKI/client.pub" -subj "${SUBJ}CN=bright-pkcs11-decoy" \
+  -CA "$PKI/decoy-ca.pem" -CAkey "$PKI/decoy-ca.key" -days 3650 -outform der -out "$PKI/decoy.der"
+pkcs11-tool --module "$(native "$MODULE")" --token-label "$TOKEN" --login --pin "$PIN" \
+  --write-object "$(native "$PKI/decoy.der")" --type cert --label "$OBJECT attestation" --id 01 >/dev/null
 # The private key must never exist outside the token, as on a real smart card.
 rm -f "$PKI/client.key" "$PKI/client.pk8" "$PKI/client.csr"
 

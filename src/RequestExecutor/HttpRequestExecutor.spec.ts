@@ -2196,7 +2196,7 @@ describe('HttpRequestExecutor', () => {
             // HTTP never reaches the handshake that would use the key URI.
             provider: 'default',
             keyUri: 'pkcs11:token=card;id=%01;type=private?pin-value=1234',
-            certUri: 'pkcs11:token=card;id=%01;type=cert',
+            certificate: Buffer.from('DER certificate'),
             tls12Only: true
           })
         ),
@@ -2306,6 +2306,36 @@ describe('HttpRequestExecutor', () => {
         expect(
           setOpt.mock.calls.filter(([name]: unknown[]) => name === 'SSLENGINE')
         ).toHaveLength(1);
+      } finally {
+        setOpt.mockRestore();
+        await new Promise((resolve) => setImmediate(resolve));
+        pool.close();
+      }
+    });
+
+    it('should give curl the certificate bytes chosen by the pre-flight instead of a certificate URI', async () => {
+      // arrange
+      const client = mockPkcs11Client();
+      const { baseUrl } = await startServer((_req, res) => res.end('ok'));
+      const setOpt = jest.spyOn(Curl.prototype, 'setOpt');
+      const pool = new CurlHandlePool(1);
+      client.pool.mockReturnValue(pool);
+      const sut = buildSut({
+        pkcs11: { module: '/opt/vendor.so', certs: [pkcs11Cert] }
+      });
+
+      // act
+      await sut.execute(createRequest({ url: `${baseUrl}/` }).request);
+
+      // assert
+      try {
+        const certOptions = setOpt.mock.calls.filter(([name]: unknown[]) =>
+          String(name).startsWith('SSLCERT')
+        );
+        expect(certOptions).toEqual([
+          ['SSLCERTTYPE', 'DER'],
+          ['SSLCERT_BLOB', Buffer.from('DER certificate')]
+        ]);
       } finally {
         setOpt.mockRestore();
         await new Promise((resolve) => setImmediate(resolve));

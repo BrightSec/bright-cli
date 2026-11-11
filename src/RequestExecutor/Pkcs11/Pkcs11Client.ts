@@ -57,6 +57,10 @@ export class Pkcs11Client {
         // Windows resolves the provider's own DLL dependencies
         // (libcrypto-3-x64.dll) through PATH, not its directory.
         env.PATH = `${dirname(provider)}${delimiter}${env.PATH ?? ''}`;
+        // OpenSSL reads OPENSSL_CONF through the CRT's getenv(), which only sees
+        // the environment as it was at process start. With this flag set it
+        // reads through GetEnvironmentVariableW, which sees the value above.
+        env.OPENSSL_WIN32_UTF8 = '1';
       }
 
       logger.debug('PKCS#11: using OpenSSL provider %s', provider);

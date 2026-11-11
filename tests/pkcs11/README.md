@@ -6,6 +6,16 @@ A software token ([SoftHSM2](https://github.com/softhsm/SoftHSMv2)) and an mTLS 
 
 `tls-stack.spec.ts` checks that the `@brightsec/node-libcurl` binding can complete that handshake with the key on the token. `repeater.spec.ts` sends requests through the Repeater's `HttpRequestExecutor` with `--pkcs11-cert` options: login count, connection pooling, and the error codes for a wrong PIN or a missing token. Both run in CI on changes to this folder, to `src/RequestExecutor` or to `package-lock.json`.
 
+`repeater-smoke.ts` checks a built Repeater (executable, npm install or Docker image). It stands in for the Bright cloud on `localhost:8000`, sends the Repeater one request and checks the status code or `errorCode`:
+
+```bash
+npx ts-node tests/pkcs11/target.ts &
+npx ts-node tests/pkcs11/repeater-smoke.ts https://localhost:8443/ 200 -- \
+  ./bin/cli repeater --hostname localhost --token any.token --id 8PY6wKetVqmfMC9K9g4A7Y \
+  --pkcs11-module "$PKCS11_TEST_MODULE" \
+  --pkcs11-cert "{\"hostname\":\"localhost\",\"port\":8443,\"pinFile\":\"$PWD/tests/pkcs11/.work/pin.txt\"}"
+```
+
 ## Run on Linux (Docker)
 
 ```bash

@@ -11,7 +11,10 @@ export type SpawnProbe = (
   command: string,
   args: string[],
   options: SpawnSyncOptions
-) => Pick<SpawnSyncReturns<string>, 'status' | 'signal' | 'stdout' | 'error'>;
+) => Pick<
+  SpawnSyncReturns<string>,
+  'status' | 'signal' | 'stdout' | 'stderr' | 'error'
+>;
 
 export interface Pkcs11ModuleProbeRunnerOptions {
   timeoutMs?: number;
@@ -41,7 +44,9 @@ export class Pkcs11ModuleProbeRunner {
     platform = process.platform,
     spawn = spawnSync as SpawnProbe,
     self = () =>
-      Helpers.getExecArgs({ excludeAll: true, escape: false, spawn: false })
+      // A pkg executable started by another one runs its first argument as a
+      // script, so the entry point must stay in the arguments.
+      Helpers.getExecArgs({ excludeAll: true, escape: false, spawn: true })
   }: Pkcs11ModuleProbeRunnerOptions = {}) {
     this.timeoutMs = timeoutMs;
     this.env = env;
@@ -72,21 +77,29 @@ export class Pkcs11ModuleProbeRunner {
 
   private static describeExit(
     status: number | null,
-    signal: NodeJS.Signals | null
+    signal: NodeJS.Signals | null,
+    stderr: string | undefined
   ): string {
-    if (signal) {
-      return `the probe process was killed by ${signal}`;
-    }
+    const exit = signal
+      ? `the probe process was killed by ${signal}`
+      : // Windows reports crashes as NTSTATUS codes, e.g. 0xC0000005 for an access violation.
+        `the probe process exited with code 0x${(status ?? 0)
+          .toString(16)
+          .toUpperCase()}`;
+    const lines = (stderr ?? '')
+      .split(/\r?\n/)
+      .map((line: string) => line.trim())
+      .filter(Boolean);
+    // Node prints an uncaught error's message above its stack and version lines.
+    const reason =
+      lines.filter((line: string) => /error/i.test(line)).pop() ?? lines.pop();
 
-    // Windows reports crashes as NTSTATUS codes, e.g. 0xC0000005 for an access violation.
-    return `the probe process exited with code 0x${(status ?? 0)
-      .toString(16)
-      .toUpperCase()}`;
+    return reason ? `${exit}: ${reason.slice(0, 300)}` : exit;
   }
 
   public probe(path: string): Pkcs11ProbeResult {
     const { command, args } = this.self();
-    const { error, status, signal, stdout } = this.spawn(
+    const { error, status, signal, stdout, stderr } = this.spawn(
       command,
       [...args, Pkcs11ModuleProbe.COMMAND, path],
       {
@@ -118,7 +131,7 @@ export class Pkcs11ModuleProbeRunner {
       : {
           ok: false,
           reason: 'crashed',
-          detail: Pkcs11ModuleProbeRunner.describeExit(status, signal)
+          detail: Pkcs11ModuleProbeRunner.describeExit(status, signal, stderr)
         };
   }
 

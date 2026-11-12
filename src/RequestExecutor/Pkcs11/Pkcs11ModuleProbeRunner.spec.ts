@@ -27,6 +27,7 @@ describe('Pkcs11ModuleProbeRunner', () => {
       signal: null,
       error: undefined,
       stdout: `PKCS11_PROBE_RESULT ${JSON.stringify(loaded)}\n`,
+      stderr: '',
       ...overrides
     }));
 
@@ -115,12 +116,23 @@ describe('Pkcs11ModuleProbeRunner', () => {
       });
     });
 
-    it('should report a crash when no result was printed', () => {
+    it('should report a crash with the error the process wrote to stderr', () => {
       // act
-      const result = runner(answer({ stdout: 'garbage' })).probe(MODULE);
+      const result = runner(
+        answer({
+          status: 1,
+          stdout: 'garbage',
+          stderr:
+            'index.js:1\n\nError: something\n    at main (index.js:1)\n\nNode.js v24.13.0\n'
+        })
+      ).probe(MODULE);
 
       // assert
-      expect(result).toMatchObject({ ok: false, reason: 'crashed' });
+      expect(result).toEqual({
+        ok: false,
+        reason: 'crashed',
+        detail: 'the probe process exited with code 0x1: Error: something'
+      });
     });
 
     it('should report a process that could not start', () => {

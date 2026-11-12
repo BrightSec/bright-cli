@@ -3,8 +3,8 @@
 # End-to-end PKCS#11 check on Windows against the real Bright cloud: the
 # smart-card bundle (bright-cli.exe + pkcs11prov.dll) signs the mTLS handshake
 # with a key on a SoftHSM2 token, and the Bright API sends a request through
-# the Repeater to the public mTLS mock. The bundle under test is the fixed
-# build below, not one built from the PR head.
+# the Repeater to the public mTLS mock. The bundle under test is the one
+# tmp-pkcs11-build-chain.yml builds from the PR head.
 name: TMP / PKCS#11 Windows e2e
 
 on:
@@ -26,14 +26,13 @@ jobs:
     if: github.head_ref == 'feat/pkcs11-smart-card'
     # The bundle is x64 only.
     runs-on: windows-2022
-    timeout-minutes: 30
+    # Most of it is waiting for the build chain's Windows job (about 30 minutes).
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
     env:
-      BUNDLE_RUN_ID: 42994625052
       BUNDLE_ARTIFACT: bright-cli-win-x64-smartcard
-      BUNDLE_VERSION: 13.17.2-smartcard.21
       BRIGHT_HOSTNAME: app.brightsec.com
       BRIGHT_PROJECT_ID: k9EfMAjAGNZaokybFPmVct
       BRIGHT_API_KEY: ${{ secrets.TMP_PKCS11_E2E_API_KEY }}
@@ -60,11 +59,43 @@ jobs:
         with:
           node-version: '24'
 
+      # The build chain runs on the push of the same commit. Only its Windows
+      # job matters, so wait for that job's artifact, not for the whole run.
+      - name: Wait for the smart-card bundle of this commit
+        id: bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          deadline=$((SECONDS + 50 * 60))
+          while [ $SECONDS -lt $deadline ]; do
+            run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow tmp-pkcs11-build-chain.yml \
+              --event push --commit "$HEAD_SHA" --json databaseId,number,status,conclusion --jq '.[0] // empty')
+            if [ -n "$run" ]; then
+              id=$(jq -r .databaseId <<< "$run")
+              artifact=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts" \
+                --jq ".artifacts[] | select(.name == \"$BUNDLE_ARTIFACT\") | .id")
+              if [ -n "$artifact" ]; then
+                echo "Build chain run $id (#$(jq -r .number <<< "$run")) uploaded $BUNDLE_ARTIFACT"
+                echo "run-id=$id" >> "$GITHUB_OUTPUT"
+                echo "version=-smartcard.$(jq -r .number <<< "$run")" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              if [ "$(jq -r .status <<< "$run")" = completed ]; then
+                echo "::error::build chain run $id ended ($(jq -r .conclusion <<< "$run")) without $BUNDLE_ARTIFACT"
+                exit 1
+              fi
+            fi
+            sleep 30
+          done
+          echo "::error::no $BUNDLE_ARTIFACT for $HEAD_SHA within 50 minutes"
+          exit 1
+
       - name: Download the smart-card bundle
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.BUNDLE_ARTIFACT }}
-          run-id: ${{ env.BUNDLE_RUN_ID }}
+          run-id: ${{ steps.bundle.outputs.run-id }}
           github-token: ${{ github.token }}
           path: smartcard
 
@@ -82,7 +113,7 @@ jobs:
             ' "$f"
           done
           smartcard/bright-cli.exe --version | tee version.txt
-          grep -qF "$BUNDLE_VERSION" version.txt
+          grep -qF "${{ steps.bundle.outputs.version }}" version.txt
 
       # Pinned by SHA-256, as in pkcs11.yml.
       - name: Download SoftHSM2 and OpenSC

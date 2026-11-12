@@ -291,12 +291,12 @@ const control = async (repeater) => {
 
 const check = async (repeater, result) => {
   const { response, error } = result;
-  const lost = noReply(repeater, result);
-  if (lost) {
-    return lost;
-  }
 
   if (testCase === 'positive') {
+    const lost = noReply(repeater, result);
+    if (lost) {
+      return lost;
+    }
     if (response?.status !== 200) {
       return `expected HTTP 200 from the target, got ${response?.status ?? `no response (error: ${JSON.stringify(error)})`}`;
     }
@@ -310,15 +310,17 @@ const check = async (repeater, result) => {
     return;
   }
 
-  if (response?.status === 200) {
-    return 'expected the TLS handshake to fail, got HTTP 200';
+  if (response) {
+    return `expected the TLS handshake to fail, got HTTP ${response.status}`;
   }
-  if (!error) {
-    return `expected an error, got ${JSON.stringify(result)}`;
+  // The cloud probes the target through the Repeater first; the rejected
+  // handshake fails that probe, so the API answers "unreachable" with neither
+  // response nor error. A lost reply looks the same, hence the reconnect check.
+  if (reconnects(repeater)) {
+    return `the Repeater lost its cloud connection ${reconnects(repeater)} time(s), so the outcome is not the target's`;
   }
-  // The cloud only reports a generic Repeater error; the TLS cause is in the
-  // Repeater log. With TLS 1.3 the client sees the rejection after its side of
-  // the handshake (receive failure), with TLS 1.2 during it (connect error).
+  // With TLS 1.3 the client sees the rejection after its side of the
+  // handshake (receive failure), with TLS 1.2 during it (connect error).
   const tlsRejected = new RegExp(
     `PKCS#11 certificate for ${escape(TARGET_HOST)} failed: .*(Failure when receiving data from the peer|SSL connect error)`
   );

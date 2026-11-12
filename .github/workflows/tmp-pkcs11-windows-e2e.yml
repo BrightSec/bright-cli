@@ -113,7 +113,7 @@ jobs:
             ' "$f"
           done
           smartcard/bright-cli.exe --version | tee version.txt
-          grep -qF "${{ steps.bundle.outputs.version }}" version.txt
+          grep -qF -- "${{ steps.bundle.outputs.version }}" version.txt
 
       # Pinned by SHA-256, as in pkcs11.yml.
       - name: Download SoftHSM2 and OpenSC

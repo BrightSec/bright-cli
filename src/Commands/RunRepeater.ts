@@ -1,8 +1,10 @@
 import {
   Cert,
   Pkcs11CertParser,
+  RequestExecutor,
   RequestExecutorOptions
 } from '../RequestExecutor';
+import { Pkcs11PinPromptCancelledError } from '../RequestExecutor/Pkcs11/Pkcs11PinPrompt';
 import { ErrorMessageFactory, Helpers, logger } from '../Utils';
 import container from '../container';
 import { DefaultRepeaterServerOptions, RepeaterLauncher } from '../Repeater';
@@ -95,6 +97,15 @@ export class RunRepeater implements CommandModule {
     return RunRepeater.pkcs11ByArgs.has(args)
       ? RunRepeater.pkcs11ByArgs.get(args)
       : RunRepeater.parsePkcs11(args);
+  }
+
+  // One at a time: an executor may be reading from the terminal.
+  private static async prepareExecutors(): Promise<void> {
+    for (const executor of container.resolveAll<RequestExecutor>(
+      RequestExecutor
+    )) {
+      await executor.prepare?.();
+    }
   }
 
   public builder(argv: Argv): Argv {
@@ -206,7 +217,7 @@ export class RunRepeater implements CommandModule {
         array: true,
         describe:
           'Client certificate whose private key is on a PKCS#11 token (smart card, USB token, HSM), for HTTPS targets. Requires --pkcs11-module. ' +
-          'Required: "hostname", "pinFile" or "pinEnv". ' +
+          'Required: "hostname". The PIN comes from "pinFile" or "pinEnv"; with neither, the Repeater asks for it in the terminal at startup if the token needs one. ' +
           'Optional: "port", "token" (token label), "label" and "id" (CKA_LABEL and hex CKA_ID of the certificate on the token, chosen at startup when absent), ' +
           '"cert" ("token" or a PEM file path; with a file, "label" and "id" select the private key), "maxConcurrency" (default 1). ' +
           'Example: {"hostname": "example.com", "pinFile": "/run/secrets/card.pin", "label": "X.509 Certificate for PIV Authentication"}'
@@ -472,9 +483,12 @@ export class RunRepeater implements CommandModule {
         })
       );
 
+      await RunRepeater.prepareExecutors();
       await repeaterLauncher.run(args.id as string, args.run as boolean);
     } catch (error) {
-      captureException(error);
+      if (!(error instanceof Pkcs11PinPromptCancelledError)) {
+        captureException(error);
+      }
       logger.error(
         ErrorMessageFactory.genericCommandError({ error, command: 'repeater' })
       );

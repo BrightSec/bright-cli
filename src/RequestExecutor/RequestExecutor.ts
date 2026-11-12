@@ -4,6 +4,11 @@ import { Protocol } from './Protocol';
 
 export interface RequestExecutor {
   execute(script: Request): Promise<Response>;
+  /**
+   * Runs once before the Repeater connects to the cloud. May read input from
+   * the terminal.
+   */
+  prepare?(): Promise<void>;
   protocol: Protocol;
 }
 

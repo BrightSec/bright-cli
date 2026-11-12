@@ -109,8 +109,12 @@ export class HttpRequestExecutor implements RequestExecutor {
 
     if (this.options.pkcs11) {
       this.pkcs11 = new Pkcs11Client(this.options.pkcs11);
-      this.pkcs11.warmUp();
     }
+  }
+
+  /** @throws Pkcs11PinPromptCancelledError */
+  public async prepare(): Promise<void> {
+    await this.pkcs11?.start();
   }
 
   public async execute(options: Request): Promise<Response> {

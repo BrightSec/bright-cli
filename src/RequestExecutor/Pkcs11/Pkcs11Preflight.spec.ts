@@ -9,6 +9,7 @@ import {
   Pkcs11PublicKeyAttributes,
   Pkcs11Token
 } from './Pkcs11Module';
+import { Pkcs11PinStore } from './Pkcs11PinStore';
 import {
   ATTESTATION,
   CLIENT,
@@ -145,6 +146,7 @@ describe('Pkcs11Preflight', () => {
       now?: () => number;
       readFile?: (path: string) => string;
       platform?: NodeJS.Platform;
+      pins?: Pkcs11PinStore;
     } = {}
   ) => {
     const loader: Pkcs11ModuleLoader = { load: jest.fn(() => module) };
@@ -520,6 +522,48 @@ describe('Pkcs11Preflight', () => {
 
       // assert
       expect(module.login).toHaveBeenCalledWith(expect.any(Buffer), PIN);
+    });
+
+    it('should log in with the PIN typed at startup for an entry without a PIN source', async () => {
+      // arrange
+      const module = fakeModule();
+      const pins = new Pkcs11PinStore();
+      const cert = descriptor({ pinEnv: undefined });
+      pins.set(cert, '5678');
+      const { preflight } = create(module, { pins });
+
+      // act
+      const identity = await preflight.identity(cert);
+
+      // assert
+      expect(module.login).toHaveBeenCalledWith(expect.any(Buffer), '5678');
+      expect(identity.keyUri).toContain('?pin-value=5678');
+    });
+
+    it('should not retry an entry whose PIN was not typed at startup', async () => {
+      // arrange
+      const module = fakeModule();
+      let now = 0;
+      const { preflight } = create(module, {
+        now: () => now,
+        pins: new Pkcs11PinStore()
+      });
+      const cert = descriptor({ pinEnv: undefined });
+      await expect(preflight.identity(cert)).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.PIN_UNAVAILABLE,
+        retryable: false,
+        message: expect.stringContaining('asks only then')
+      });
+      now = 60_000;
+
+      // act
+      const result = preflight.identity(cert);
+
+      // assert
+      await expect(result).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.PIN_UNAVAILABLE
+      });
+      expect(module.openSession).not.toHaveBeenCalled();
     });
 
     it('should select the certificate by "label" and use the key holding its public key', async () => {
@@ -982,6 +1026,41 @@ describe('Pkcs11Preflight', () => {
         code: Pkcs11ErrorCode.MODULE_LOAD_FAILED,
         retryable: true
       });
+    });
+  });
+
+  describe('requiresPin', () => {
+    it.each([
+      { flags: CKF_LOGIN_REQUIRED, expected: true },
+      { flags: 0, expected: false }
+    ])(
+      'should return $expected for token flags $flags without opening a session',
+      ({ flags, expected }) => {
+        // arrange
+        const module = fakeModule({ tokens: [token('card', flags)] });
+        const { preflight } = create(module);
+
+        // act
+        const result = preflight.requiresPin(descriptor({ pinEnv: undefined }));
+
+        // assert
+        expect(result).toBe(expected);
+        expect(module.openSession).not.toHaveBeenCalled();
+      }
+    );
+
+    it('should throw when the token is not present', () => {
+      // arrange
+      const { preflight } = create(fakeModule({ tokens: [] }));
+
+      // act
+      const act = () =>
+        preflight.requiresPin(descriptor({ pinEnv: undefined }));
+
+      // assert
+      expect(act).toThrow(
+        expect.objectContaining({ code: Pkcs11ErrorCode.TOKEN_NOT_FOUND })
+      );
     });
   });
 });

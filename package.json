@@ -25,7 +25,7 @@
     "node": ">=24 <=26"
   },
   "dependencies": {
-    "@brightsec/node-libcurl": "5.1.6",
+    "@brightsec/node-libcurl": "5.1.7-1",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "@neuralegion/os-service": "^2.0.7",
     "@neuralegion/raw-socket": "^2.0.2",

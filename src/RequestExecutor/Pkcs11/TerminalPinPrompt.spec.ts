@@ -1,5 +1,6 @@
 import { TerminalPinPrompt } from './TerminalPinPrompt';
 import { Pkcs11PinPromptCancelledError } from './Pkcs11PinPrompt';
+import { Logger, LogLevel } from '../../Utils';
 import { PassThrough } from 'node:stream';
 import { EOL } from 'node:os';
 
@@ -9,16 +10,25 @@ describe('TerminalPinPrompt', () => {
       isTTY,
       setRawMode: jest.fn()
     });
-    const output = { write: jest.fn<unknown, [string]>() };
+    // The prompt and the log share one terminal, so both write here.
+    const screen: string[] = [];
+    const output = {
+      write: jest.fn((chunk: string) => screen.push(chunk))
+    };
+    const log = new Logger(LogLevel.VERBOSE);
 
     return {
       input,
       output,
-      prompt: new TerminalPinPrompt(input, output),
+      log,
+      screen,
+      prompt: new TerminalPinPrompt(input, output, log),
       written: () =>
         output.write.mock.calls.map(([chunk]: [string]) => chunk).join('')
     };
   };
+
+  afterEach(() => jest.restoreAllMocks());
 
   describe('interactive', () => {
     it.each([
@@ -82,6 +92,37 @@ describe('TerminalPinPrompt', () => {
       expect(input.setRawMode.mock.calls).toEqual([[true], [false]]);
       expect(input.listenerCount('data')).toBe(0);
     });
+
+    it.each([
+      { action: 'entered', keys: '1234\r' },
+      { action: 'cancelled', keys: '\u0003' }
+    ])(
+      'should print the log lines written while the PIN is typed after the PIN is $action',
+      async ({ keys }) => {
+        // arrange
+        const { input, prompt, log, screen } = terminal();
+        jest
+          .spyOn(process.stdout, 'write')
+          .mockImplementation((chunk: string | Uint8Array) => {
+            screen.push(chunk.toString());
+
+            return true;
+          });
+
+        // act
+        const result = prompt.ask('PIN: ');
+        log.debug('Rotation is not needed');
+        input.write(keys);
+        await result.catch((): undefined => undefined);
+
+        // assert
+        expect(screen).toEqual([
+          'PIN: ',
+          EOL,
+          expect.stringMatching(/\[VERBOSE\] Rotation is not needed\n$/)
+        ]);
+      }
+    );
 
     it.each([
       { key: 'Ctrl+C', input: '12\u0003' },

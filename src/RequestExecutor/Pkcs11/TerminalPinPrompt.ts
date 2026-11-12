@@ -2,6 +2,7 @@ import {
   Pkcs11PinPrompt,
   Pkcs11PinPromptCancelledError
 } from './Pkcs11PinPrompt';
+import { logger } from '../../Utils';
 import { EventEmitter } from 'node:events';
 import { EOL } from 'node:os';
 
@@ -16,6 +17,11 @@ export interface TerminalOutput {
   write(chunk: string): unknown;
 }
 
+export interface TerminalLog {
+  pauseTerminalOutput(): void;
+  resumeTerminalOutput(): void;
+}
+
 /** Reads a PIN from the terminal without echoing it. */
 export class TerminalPinPrompt implements Pkcs11PinPrompt {
   private static readonly ENTER = new Set(['\r', '\n']);
@@ -27,7 +33,9 @@ export class TerminalPinPrompt implements Pkcs11PinPrompt {
   constructor(
     private readonly input: TerminalInput = process.stdin,
     // stderr keeps the question out of redirected stdout logs.
-    private readonly output: TerminalOutput = process.stderr
+    private readonly output: TerminalOutput = process.stderr,
+    // Startup tasks keep logging while the user types.
+    private readonly log: TerminalLog = logger
   ) {}
 
   get interactive(): boolean {
@@ -43,6 +51,7 @@ export class TerminalPinPrompt implements Pkcs11PinPrompt {
         this.input.setRawMode(false);
         this.input.pause();
         this.output.write(EOL);
+        this.log.resumeTerminalOutput();
 
         if (error) {
           reject(error);
@@ -76,8 +85,9 @@ export class TerminalPinPrompt implements Pkcs11PinPrompt {
         }
       };
 
-      this.output.write(question);
       this.input.setRawMode(true);
+      this.log.pauseTerminalOutput();
+      this.output.write(question);
       this.input.on('data', onData);
       this.input.resume();
     });

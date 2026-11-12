@@ -48,6 +48,11 @@ export interface Pkcs11PreflightOptions {
   platform?: NodeJS.Platform;
   /** PINs typed at startup, for entries without "pinFile" and "pinEnv". */
   pins?: Pkcs11PinStore;
+  /**
+   * Appended to failures that a different library could fix, when the
+   * library was picked automatically.
+   */
+  moduleHint?: string;
 }
 
 interface StoredFailure {
@@ -99,6 +104,12 @@ export class Pkcs11Preflight {
     'CKR_PIN_LEN_RANGE',
     'CKR_PIN_EXPIRED'
   ]);
+  private static readonly MODULE_RELATED_ERRORS: ReadonlySet<Pkcs11ErrorCode> =
+    new Set([
+      Pkcs11ErrorCode.MODULE_LOAD_FAILED,
+      Pkcs11ErrorCode.TOKEN_NOT_FOUND,
+      Pkcs11ErrorCode.KEY_NOT_FOUND
+    ]);
 
   private readonly retryAfterMs: number;
   private readonly now: () => number;
@@ -106,6 +117,7 @@ export class Pkcs11Preflight {
   private readonly readFile: (path: string) => string;
   private readonly platform: NodeJS.Platform;
   private readonly pins: Pkcs11PinStore;
+  private readonly moduleHint?: string;
   private readonly inflight = new Map<Pkcs11Cert, Promise<Pkcs11Identity>>();
   private readonly identities = new Map<Pkcs11Cert, Pkcs11Identity>();
   private readonly failures = new Map<Pkcs11Cert, StoredFailure>();
@@ -122,7 +134,8 @@ export class Pkcs11Preflight {
       env = process.env,
       readFile = (path: string) => readFileSync(path, 'utf8'),
       platform = process.platform,
-      pins = new Pkcs11PinStore()
+      pins = new Pkcs11PinStore(),
+      moduleHint
     }: Pkcs11PreflightOptions = {}
   ) {
     this.retryAfterMs = retryAfterMs;
@@ -131,6 +144,7 @@ export class Pkcs11Preflight {
     this.readFile = readFile;
     this.platform = platform;
     this.pins = pins;
+    this.moduleHint = moduleHint;
   }
 
   // The flags are single bits; this avoids bitwise operators, which the lint rules ban.
@@ -187,18 +201,31 @@ export class Pkcs11Preflight {
 
       return identity;
     } catch (e) {
-      const error =
+      const error = this.withModuleHint(
         e instanceof Pkcs11Error
           ? e
           : new Pkcs11Error(
               Pkcs11ErrorCode.MODULE_LOAD_FAILED,
               `PKCS#11 check for ${cert.hostname} failed: ${e?.message}`,
               true
-            );
+            )
+      );
       this.failures.set(cert, { error, at: this.now() });
       logger.error('PKCS#11: %s', error.message);
       throw error;
     }
+  }
+
+  // A wrong PIN is not the library's fault; suggesting another one there misleads.
+  private withModuleHint(error: Pkcs11Error): Pkcs11Error {
+    return this.moduleHint &&
+      Pkcs11Preflight.MODULE_RELATED_ERRORS.has(error.code)
+      ? new Pkcs11Error(
+          error.code,
+          `${error.message} ${this.moduleHint}`,
+          error.retryable
+        )
+      : error;
   }
 
   private resolveIdentity(cert: Pkcs11Cert): Pkcs11Identity {

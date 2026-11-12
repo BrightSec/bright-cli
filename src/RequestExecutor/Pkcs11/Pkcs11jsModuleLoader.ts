@@ -16,7 +16,8 @@ export class Pkcs11jsModuleLoader implements Pkcs11ModuleLoader {
 
   // An optional dependency compiled at install time: without build tools the
   // install skips it, and only PKCS#11 users need it.
-  private static binding(): Pkcs11jsBinding {
+  /** @throws Pkcs11Error when the native addon is not installed. */
+  public static binding(): Pkcs11jsBinding {
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires, import/no-extraneous-dependencies
       return require('pkcs11js');

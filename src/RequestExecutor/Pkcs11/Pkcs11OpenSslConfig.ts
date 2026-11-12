@@ -27,6 +27,11 @@ export class Pkcs11OpenSslConfig {
     return /pkcs11prov/i.test(basename(provider)) ? 'pkcs11prov' : 'pkcs11';
   }
 
+  /** @returns whether `path` can be written into the generated config. */
+  public static isSafePath(path: string): boolean {
+    return !Pkcs11OpenSslConfig.UNSAFE.test(path.replace(/\\/g, '/'));
+  }
+
   public static render(
     provider: string,
     module: string
@@ -76,7 +81,7 @@ export class Pkcs11OpenSslConfig {
     // Forward slashes work on Windows too and need no escaping.
     const normalized = value.replace(/\\/g, '/');
 
-    if (Pkcs11OpenSslConfig.UNSAFE.test(normalized)) {
+    if (!Pkcs11OpenSslConfig.isSafePath(value)) {
       throw new Error(
         `The PKCS#11 ${subject} path ${value} contains a character OpenSSL cannot read from its config ("#", "$", ";", quotes or line breaks).`
       );

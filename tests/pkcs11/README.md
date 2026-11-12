@@ -95,6 +95,16 @@ Inspect the token with `pkcs11-tool --module "$PKCS11_TEST_MODULE" --login --pin
 | `OPENSSL_CONF` (Linux)                          | Loads pkcs11-provider with the `no-deinit` quirk, which concurrent provider instances need (see Known limitations). |
 | `PKCS11_TEST_*`                                 | Token, object, PIN, PKI directory and provider/engine names used by the tests.                                      |
 
+## Library discovery on Windows
+
+Without `--pkcs11-module`, the Repeater on Windows looks for the vendor library in the default install locations of common card software (`src/RequestExecutor/Pkcs11/Pkcs11ModuleCandidates.ts`, in the order tried). It never loads a file that is not x64, and loads each other candidate in a child process (`bright-cli __pkcs11-probe <dll>`), so a library that crashes or hangs does not take the Repeater down. It picks the first library that shows the token named in `--pkcs11-cert` (or any token), otherwise the first that loads, and logs it:
+
+```text
+PKCS#11: --pkcs11-module is not set; connected the Thales SafeNet Authentication Client (IDPrime) library C:\Program Files\SafeNet\Authentication\SAC\x64\IDPrimePKCS1164.dll (1 token present). To keep this choice, pass --pkcs11-module "C:\Program Files\SafeNet\Authentication\SAC\x64\IDPrimePKCS1164.dll".
+```
+
+`--log-level verbose` lists every location checked and each probe's result. `--daemon` writes the library it found into the service's arguments. HSM libraries and SoftHSM2 are not in the list, so to try discovery with SoftHSM2, copy `lib/softhsm2-x64.dll` (it depends on system DLLs only) to one of the listed paths, e.g. `C:\Program Files\SafeNet\Authentication\SAC\x64\IDPrimePKCS1164.dll`, and remove it afterwards.
+
 ## Known limitations
 
 - **One PKCS#11 module per process.** curl loads and unloads the provider together with each easy handle, and the unload tears down state of the process-wide module (`C_Finalize`, `C_CloseAllSessions`). A fresh connection on a _new_ handle in the same process then fails (`PKCS11 Module has not been initialized yet`, or `provider signature failure` with libp11). Keeping the easy handles long-lived avoids it with both providers. With several long-lived handles at once, pkcs11-provider additionally needs the `no-deinit` quirk (otherwise: `The specified key handle is not valid`); libp11 doesn't. Connection reuse reduces how often any of this matters. The tests run each case in its own process and cover the long-lived-handle mode explicitly.

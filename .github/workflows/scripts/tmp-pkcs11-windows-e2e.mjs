@@ -136,6 +136,8 @@ const repeaterEnv = () => {
   result.SOFTHSM2_CONF = softhsmConf;
   // Logs why the WebSocket to the cloud closes (transport error, ping timeout, server disconnect).
   result.DEBUG = 'engine.io-client:socket,socket.io-client:manager,socket.io-client:socket';
+  // The WebSocket closes a few ms after a PKCS#11 request starts: show the TLS/TCP error behind it.
+  result.NODE_DEBUG = 'tls,net';
   result.PATH =
     process.platform === 'win32'
       ? `${systemRoot}\\System32;${systemRoot}`

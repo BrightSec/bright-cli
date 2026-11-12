@@ -134,6 +134,8 @@ const repeaterEnv = () => {
   }
   const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
   result.SOFTHSM2_CONF = softhsmConf;
+  // Logs why the WebSocket to the cloud closes (transport error, ping timeout, server disconnect).
+  result.DEBUG = 'engine.io-client:socket,socket.io-client:manager,socket.io-client:socket';
   result.PATH =
     process.platform === 'win32'
       ? `${systemRoot}\\System32;${systemRoot}`
@@ -212,11 +214,11 @@ const startRepeaterWithRetry = async () => {
   fail('the Repeater exited before it started, 3 times');
 };
 
-const execute = async () => {
+const execute = async (targetUrl) => {
   const url = `https://${hostname}/api/v2/projects/${projectId}/entry-points/execute`;
   const body = JSON.stringify({
     repeaterId,
-    request: { method: 'GET', url: TARGET_URL },
+    request: { method: 'GET', url: targetUrl },
     parameters: []
   });
 
@@ -260,8 +262,37 @@ const waitForLog = async (repeater, pattern, timeoutMs) => {
 
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const reconnects = (repeater) =>
+  (repeater.log.match(/Reconnecting to Bright cloud/g) ?? []).length;
+
+// With no response and no error the cloud's reachability probe through the
+// Repeater got no reply, so the request itself was never sent.
+const noReply = (repeater, result) =>
+  !result.response && !result.error
+    ? `the cloud got no reply through the Repeater (connectivity: ${result.connectivity}); ` +
+      `the Repeater reconnected to the cloud ${reconnects(repeater)} time(s)`
+    : undefined;
+
+// A target without a PKCS#11 certificate: tells a Repeater-to-cloud problem
+// from one caused by the PKCS#11 request.
+const CONTROL_URL = 'https://example.com/';
+
+const control = async (repeater) => {
+  const before = reconnects(repeater);
+  const { result, error } = await execute(CONTROL_URL);
+  await sleep(5_000);
+  process.stdout.write(
+    `control (no PKCS#11): ${error ?? `status ${result.response?.status ?? 'none'}, connectivity ${result.connectivity}`}; ` +
+      `Repeater reconnects during it: ${reconnects(repeater) - before}\n`
+  );
+};
+
 const check = async (repeater, result) => {
   const { response, error } = result;
+  const lost = noReply(repeater, result);
+  if (lost) {
+    return lost;
+  }
 
   if (testCase === 'positive') {
     if (response?.status !== 200) {
@@ -339,7 +370,8 @@ const main = async () => {
   const repeater = await startRepeaterWithRetry();
   let problem;
   try {
-    const { result, error } = await execute();
+    await control(repeater);
+    const { result, error } = await execute(TARGET_URL);
     problem = error ?? (await check(repeater, result));
   } finally {
     await stopRepeater(repeater);

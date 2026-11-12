@@ -4,10 +4,20 @@
 // SoftHSM2 token, starts the Repeater with it, has the Bright cloud send one
 // request through the Repeater to the mTLS target, and checks the outcome.
 //
-// Usage: node tmp-pkcs11-windows-e2e.mjs <positive|negative> <client.p12>
+// Usage: node tmp-pkcs11-windows-e2e.mjs <case> <client.p12>
+//
+// Cases: positive, negative, and the library discovery ones, where the
+// Repeater gets no --pkcs11-module and must find PKCS11_PLANTED_MODULE, a copy
+// of SoftHSM2 under the name of a card vendor's library:
+//   discovery-not-found  only a 32-bit copy is planted; the Repeater must
+//                        refuse to start and say it needs the 64-bit build
+//   discovery-positive   as positive, through the planted x64 copy
+//   discovery-hint       the wanted token is missing; the error must say the
+//                        library was picked automatically
 //
 // Environment: BRIGHT_HOSTNAME, BRIGHT_PROJECT_ID, BRIGHT_API_KEY,
-// BRIGHT_REPEATER_ID, REPEATER_BIN, PKCS11_MODULE, PKCS11_WORK_DIR.
+// BRIGHT_REPEATER_ID, REPEATER_BIN, PKCS11_MODULE, PKCS11_WORK_DIR, and
+// PKCS11_PLANTED_MODULE for the discovery cases.
 // softhsm2-util, pkcs11-tool and openssl must be on PATH.
 
 import { execFileSync, spawn } from 'node:child_process';
@@ -45,10 +55,21 @@ const env = (name, fallback) => {
   return value;
 };
 
+const CASES = [
+  'positive',
+  'negative',
+  'discovery-not-found',
+  'discovery-positive',
+  'discovery-hint'
+];
 const [testCase, p12Arg] = process.argv.slice(2);
-if (!['positive', 'negative'].includes(testCase) || !p12Arg) {
-  fail('usage: tmp-pkcs11-windows-e2e.mjs <positive|negative> <client.p12>');
+if (!CASES.includes(testCase) || !p12Arg) {
+  fail(`usage: tmp-pkcs11-windows-e2e.mjs <${CASES.join('|')}> <client.p12>`);
 }
+const discovery = testCase.startsWith('discovery-');
+// What the Repeater's cert entry asks for: a token that is not there, in the hint case.
+const wantedToken = testCase === 'discovery-hint' ? 'no-such-token' : TOKEN_LABEL;
+const NOT_FOUND_TIMEOUT_MS = 60_000;
 
 const hostname = env('BRIGHT_HOSTNAME', 'app.brightsec.com');
 const projectId = env('BRIGHT_PROJECT_ID');
@@ -60,6 +81,7 @@ const pkcs11Module = resolve(env('PKCS11_MODULE'));
 const slash = (path) => path.replace(/\\/g, '/');
 const work = slash(resolve(env('PKCS11_WORK_DIR')));
 const p12 = resolve(p12Arg);
+const plantedModule = discovery ? env('PKCS11_PLANTED_MODULE') : undefined;
 const softhsmConf = `${work}/softhsm2.conf`;
 const pinFile = `${work}/pin.txt`;
 
@@ -154,8 +176,8 @@ const startRepeater = async () => {
     '--hostname', hostname,
     '--token', apiKey,
     '--id', repeaterId,
-    '--pkcs11-module', pkcs11Module,
-    '--pkcs11-cert', JSON.stringify({ hostname: TARGET_HOST, token: TOKEN_LABEL, pinFile }),
+    ...(discovery ? [] : ['--pkcs11-module', pkcs11Module]),
+    '--pkcs11-cert', JSON.stringify({ hostname: TARGET_HOST, token: wantedToken, pinFile }),
     '--log-level', '4'
   ];
   const child = spawn(repeaterBin, args, { env: repeaterEnv() });
@@ -289,10 +311,19 @@ const control = async (repeater) => {
   );
 };
 
+const connectedPlanted = () =>
+  new RegExp(
+    `PKCS#11: --pkcs11-module is not set; connected the .+ library ${escape(plantedModule)} \\(\\d+ tokens? present\\)`
+  );
+
 const check = async (repeater, result) => {
   const { response, error } = result;
 
-  if (testCase === 'positive') {
+  if (testCase === 'discovery-positive' && !connectedPlanted().test(repeater.log)) {
+    return `the Repeater did not log that it connected ${plantedModule}`;
+  }
+
+  if (testCase === 'positive' || testCase === 'discovery-positive') {
     const lost = noReply(repeater, result);
     if (lost) {
       return lost;
@@ -366,17 +397,74 @@ const checkCredentials = async () => {
   fail(`the API key or repeater ID secret does not work on ${hostname}`);
 };
 
+// The Repeater must stop during option validation, before it logs in to the cloud.
+const checkNotFound = async () => {
+  writeFileSync(pinFile, PIN);
+  const repeater = await startRepeater();
+  if (!repeater.exited) {
+    await stopRepeater(repeater);
+
+    return 'the Repeater started although no 64-bit PKCS#11 library is installed';
+  }
+  const code = await repeater.exitedPromise;
+  const expected = [
+    /No PKCS#11 library for your smart card was found, and --pkcs11-module is not set\./,
+    new RegExp(`${escape(plantedModule)}: this is the 32-bit version\\. Bright CLI is 64-bit`)
+  ];
+  const missing = expected.filter((pattern) => !pattern.test(repeater.log));
+  if (missing.length) {
+    return `the Repeater output lacks ${missing.join(', ')}`;
+  }
+  if (/connected the .+ library/.test(repeater.log)) {
+    return 'the Repeater connected a library although only a 32-bit one is installed';
+  }
+  if (code === 0) {
+    return 'the Repeater exited with code 0';
+  }
+};
+
+const checkHint = async (repeater) => {
+  if (!connectedPlanted().test(repeater.log)) {
+    return `the Repeater did not log that it connected ${plantedModule}`;
+  }
+  const hint = new RegExp(
+    `Token "${wantedToken}" not found; .*The PKCS#11 library ${escape(plantedModule)} was selected automatically because --pkcs11-module is not set\\.`
+  );
+  if (!(await waitForLog(repeater, hint, 30_000))) {
+    return 'the pre-flight error does not say that the library was selected automatically';
+  }
+};
+
 const main = async () => {
   process.stdout.write(`== ${testCase}: ${p12}\n`);
+
+  if (testCase === 'discovery-not-found') {
+    mkdirSync(work, { recursive: true });
+    const problem = await Promise.race([
+      checkNotFound(),
+      sleep(NOT_FOUND_TIMEOUT_MS).then(() => 'the Repeater neither started nor stopped in time')
+    ]);
+    if (problem) {
+      fail(`${testCase}: ${problem}`);
+    }
+    process.stdout.write(`E2E PASSED: ${testCase}\n`);
+
+    return;
+  }
+
   await checkCredentials();
   loadCertificate();
 
   const repeater = await startRepeaterWithRetry();
   let problem;
   try {
-    await control(repeater);
-    const { result, error } = await execute(TARGET_URL);
-    problem = error ?? (await check(repeater, result));
+    if (testCase === 'discovery-hint') {
+      problem = await checkHint(repeater);
+    } else {
+      await control(repeater);
+      const { result, error } = await execute(TARGET_URL);
+      problem = error ?? (await check(repeater, result));
+    }
   } finally {
     await stopRepeater(repeater);
   }

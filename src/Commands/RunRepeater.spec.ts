@@ -3,6 +3,7 @@ import { RunRepeater } from './RunRepeater';
 import { CliBuilder, CliConfig, CliInfo, ConfigReader } from '../Config';
 import { DefaultRepeaterServerOptions } from '../Repeater';
 import { RequestExecutorOptions } from '../RequestExecutor';
+import { Pkcs11PinPromptCancelledError } from '../RequestExecutor/Pkcs11/Pkcs11PinPrompt';
 import container from '../container';
 import { anything, instance, mock, when } from 'ts-mockito';
 import { Arguments, Argv } from 'yargs';
@@ -473,5 +474,95 @@ describe('RunRepeater', () => {
         ]);
       }
     );
+  });
+
+  describe('handler', () => {
+    const SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
+    let listeners: Map<string, NodeJS.SignalsListener[]>;
+
+    beforeEach(() => {
+      listeners = new Map(
+        SIGNALS.map((signal) => [signal, process.listeners(signal)])
+      );
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+      process.exitCode = undefined;
+      for (const signal of SIGNALS) {
+        process
+          .listeners(signal)
+          .filter((listener) => !listeners.get(signal)?.includes(listener))
+          .forEach((listener) => process.off(signal, listener));
+      }
+    });
+
+    const arrange = (prepare: () => Promise<void>) => {
+      const calls: string[] = [];
+      const launcher = {
+        run: jest.fn(() => {
+          calls.push('run');
+
+          return Promise.resolve();
+        }),
+        close: jest.fn(() => Promise.resolve()),
+        install: jest.fn(() => Promise.resolve())
+      };
+      const executor = {
+        prepare: jest.fn(() => {
+          calls.push('prepare');
+
+          return prepare();
+        })
+      };
+      jest.spyOn(container, 'resolve').mockReturnValue(launcher);
+      jest.spyOn(container, 'resolveAll').mockReturnValue([executor]);
+
+      return { calls, launcher, executor };
+    };
+
+    const args = (extra: Record<string, unknown> = {}): Arguments => ({
+      _: [],
+      $0: 'bright-cli',
+      id: repeaterId,
+      ...extra
+    });
+
+    it('should prepare the executors before the Repeater connects', async () => {
+      // arrange
+      const { calls } = arrange(() => Promise.resolve());
+
+      // act
+      await new RunRepeater().handler(args());
+
+      // assert
+      expect(calls).toEqual(['prepare', 'run']);
+    });
+
+    it('should not start the Repeater when PIN entry is cancelled', async () => {
+      // arrange
+      const { launcher } = arrange(() =>
+        Promise.reject(new Pkcs11PinPromptCancelledError())
+      );
+
+      // act
+      await new RunRepeater().handler(args());
+
+      // assert
+      expect(launcher.run).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('should not prepare the executors when installing the daemon', async () => {
+      // arrange
+      const { executor, launcher } = arrange(() => Promise.resolve());
+
+      // act
+      await new RunRepeater().handler(args({ daemon: true }));
+
+      // assert
+      expect(launcher.install).toHaveBeenCalled();
+      expect(executor.prepare).not.toHaveBeenCalled();
+    });
   });
 });

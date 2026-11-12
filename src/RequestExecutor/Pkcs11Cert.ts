@@ -5,6 +5,10 @@
 export interface Pkcs11Cert {
   hostname: string;
   port?: string;
+  /**
+   * With neither `pinFile` nor `pinEnv`, the Repeater asks for the PIN in the
+   * terminal at startup, if the token needs one.
+   */
   pinFile?: string;
   /** Name of the environment variable holding the PIN, never the PIN itself. */
   pinEnv?: string;

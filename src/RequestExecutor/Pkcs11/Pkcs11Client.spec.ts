@@ -1,6 +1,7 @@
 import { Pkcs11Client, Pkcs11ClientDependencies } from './Pkcs11Client';
 import { Pkcs11Error, Pkcs11ErrorCode } from './Pkcs11Error';
-import { Pkcs11ModuleLoader } from './Pkcs11Module';
+import { Pkcs11Module, Pkcs11ModuleLoader } from './Pkcs11Module';
+import { Pkcs11PinPromptCancelledError } from './Pkcs11PinPrompt';
 import { Pkcs11Cert } from '../Pkcs11Cert';
 import { delimiter } from 'node:path';
 
@@ -25,6 +26,7 @@ describe('Pkcs11Client', () => {
     writeConfig: () => ({ path: '/tmp/x/openssl.cnf', name: 'pkcs11prov' }),
     env: {},
     platform: 'linux',
+    prompt: { interactive: false, ask: jest.fn() },
     ...overrides
   });
 
@@ -147,6 +149,187 @@ describe('Pkcs11Client', () => {
         code: Pkcs11ErrorCode.MODULE_LOAD_FAILED,
         message: 'provider not found'
       });
+    });
+  });
+
+  describe('start', () => {
+    const CKF_LOGIN_REQUIRED = 0x4;
+    const certificate = {
+      handle: Buffer.from('cert'),
+      label: 'client',
+      id: Buffer.from('01', 'hex'),
+      value: Buffer.from('not a DER certificate')
+    };
+    const key = {
+      handle: Buffer.from('key'),
+      label: 'client',
+      id: Buffer.from('01', 'hex')
+    };
+
+    const card = (tokens: { label: string; flags: number }[]) => ({
+      tokens: jest.fn(() =>
+        tokens.map(({ label, flags }) => ({
+          slot: Buffer.from(label),
+          label,
+          serial: `${label}-serial`,
+          flags
+        }))
+      ),
+      mechanisms: jest.fn((): number[] => []),
+      openSession: jest.fn(() => Buffer.from('session')),
+      closeSession: jest.fn(),
+      login: jest.fn(),
+      findPrivateKeys: jest.fn(() => [key]),
+      findCertificates: jest.fn(() => [certificate]),
+      publicKeyAttributes: jest.fn(() => ({}))
+    });
+
+    const prompt = (...answers: string[]) => ({
+      interactive: true,
+      ask: jest.fn(() => Promise.resolve(answers.shift() ?? ''))
+    });
+
+    const create = (
+      certs: Pkcs11Cert[],
+      module: Pkcs11Module | Error,
+      overrides: Partial<Pkcs11ClientDependencies> = {}
+    ) =>
+      new Pkcs11Client(
+        { module: '/opt/vendor.so', certs },
+        dependencies({
+          loader: {
+            load: jest.fn(() => {
+              if (module instanceof Error) {
+                throw module;
+              }
+
+              return module;
+            })
+          },
+          ...overrides
+        })
+      );
+
+    it('should ask once for each entry without a PIN source whose token needs a login', async () => {
+      // arrange
+      const module = card([
+        { label: 'locked', flags: CKF_LOGIN_REQUIRED },
+        { label: 'open', flags: 0 }
+      ]);
+      const typed = cert({ pinEnv: undefined, token: 'locked' });
+      const open = cert({ pinEnv: undefined, token: 'open' });
+      const fromEnv = cert({ hostname: 'env.example.com', token: 'locked' });
+      const terminal = prompt('1234');
+      const client = create([typed, open, fromEnv], module, {
+        prompt: terminal,
+        env: { CARD_PIN: '1234' }
+      });
+
+      // act
+      await client.start();
+
+      // assert
+      expect(terminal.ask).toHaveBeenCalledTimes(1);
+      expect(terminal.ask).toHaveBeenCalledWith(
+        'PKCS#11 PIN for example.com (token "locked"): '
+      );
+      await expect(client.identity(typed)).resolves.toMatchObject({
+        keyUri: expect.stringContaining('?pin-value=1234')
+      });
+      expect(module.login).toHaveBeenCalledWith(expect.any(Buffer), '1234');
+    });
+
+    it('should never ask again, even when a request needs a PIN that was not entered', async () => {
+      // arrange
+      const module = card([{ label: 'card', flags: CKF_LOGIN_REQUIRED }]);
+      const entry = cert({ pinEnv: undefined });
+      const terminal = prompt('');
+      const client = create([entry], module, { prompt: terminal });
+
+      // act
+      await client.start();
+      await client.start();
+      const result = client.identity(entry);
+
+      // assert
+      await expect(result).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.PIN_UNAVAILABLE
+      });
+      expect(terminal.ask).toHaveBeenCalledTimes(1);
+      expect(module.login).not.toHaveBeenCalled();
+    });
+
+    it('should ask for the PIN of a token that is not inserted yet', async () => {
+      // arrange
+      const terminal = prompt('1234');
+      const client = create([cert({ pinEnv: undefined })], card([]), {
+        prompt: terminal
+      });
+
+      // act
+      await client.start();
+
+      // assert
+      expect(terminal.ask).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not ask when the PKCS#11 module cannot be loaded', async () => {
+      // arrange
+      const terminal = prompt('1234');
+      const client = create(
+        [cert({ pinEnv: undefined })],
+        new Error('no such file'),
+        { prompt: terminal }
+      );
+
+      // act
+      await client.start();
+
+      // assert
+      expect(terminal.ask).not.toHaveBeenCalled();
+    });
+
+    it('should not ask without a terminal', async () => {
+      // arrange
+      const module = card([{ label: 'card', flags: CKF_LOGIN_REQUIRED }]);
+      const entry = cert({ pinEnv: undefined });
+      const terminal = { interactive: false, ask: jest.fn() };
+      const client = create([entry], module, { prompt: terminal });
+
+      // act
+      await client.start();
+
+      // assert
+      expect(terminal.ask).not.toHaveBeenCalled();
+      await expect(client.identity(entry)).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.PIN_UNAVAILABLE
+      });
+    });
+
+    it('should stop asking when the user cancels the input', async () => {
+      // arrange
+      const module = card([{ label: 'card', flags: CKF_LOGIN_REQUIRED }]);
+      const terminal = {
+        interactive: true,
+        ask: jest.fn(() => Promise.reject(new Pkcs11PinPromptCancelledError()))
+      };
+      const client = create(
+        [
+          cert({ pinEnv: undefined }),
+          cert({ hostname: 'other.com', pinEnv: undefined })
+        ],
+        module,
+        { prompt: terminal }
+      );
+
+      // act
+      const result = client.start();
+
+      // assert
+      await expect(result).rejects.toBeInstanceOf(
+        Pkcs11PinPromptCancelledError
+      );
+      expect(terminal.ask).toHaveBeenCalledTimes(1);
     });
   });
 

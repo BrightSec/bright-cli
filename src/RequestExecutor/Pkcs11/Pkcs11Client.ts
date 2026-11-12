@@ -160,7 +160,7 @@ export class Pkcs11Client {
 
   private async askForPin(cert: Pkcs11Cert): Promise<void> {
     const pin = await this.prompt.ask(
-      `PKCS#11 PIN for ${this.describe(cert)}: `
+      `Enter the PKCS#11 PIN for ${this.describe(cert)}: `
     );
 
     if (pin) {

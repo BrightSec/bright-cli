@@ -231,7 +231,7 @@ describe('Pkcs11Client', () => {
       // assert
       expect(terminal.ask).toHaveBeenCalledTimes(1);
       expect(terminal.ask).toHaveBeenCalledWith(
-        'PKCS#11 PIN for example.com (token "locked"): '
+        'Enter the PKCS#11 PIN for example.com (token "locked"): '
       );
       await expect(client.identity(typed)).resolves.toMatchObject({
         keyUri: expect.stringContaining('?pin-value=1234')

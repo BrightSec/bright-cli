@@ -12,7 +12,7 @@
 
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 // A dedicated instance (Helm release ao-https-mtls-win-e2e, built-in
@@ -134,6 +134,11 @@ const repeaterEnv = () => {
   }
   const systemRoot = process.env.SystemRoot ?? 'C:\\Windows';
   result.SOFTHSM2_CONF = softhsmConf;
+  // TODO: experiment, revert. Does the by-name provider load stop leaving an
+  // error that breaks the WebSocket's TLS once it finds pkcs11prov.dll?
+  if (process.platform === 'win32') {
+    result.OPENSSL_MODULES = dirname(repeaterBin);
+  }
   // Logs why the WebSocket to the cloud closes (transport error, ping timeout, server disconnect).
   result.DEBUG = 'engine.io-client:socket,socket.io-client:manager,socket.io-client:socket';
   // The WebSocket closes a few ms after a PKCS#11 request starts: show the TLS/TCP error behind it.

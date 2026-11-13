@@ -40,7 +40,7 @@ jobs:
     env:
       BUNDLE_ARTIFACT: bright-cli-win-x64-smartcard
       BRIGHT_HOSTNAME: app.brightsec.com
-      BRIGHT_PROJECT_ID: k9EfMAjAGNZaokybFPmVct
+      BRIGHT_PROJECT_ID: wKjo6enQEyt5bX4fzgQ4RN
       BRIGHT_API_KEY: ${{ secrets.TMP_PKCS11_E2E_API_KEY }}
       BRIGHT_REPEATER_ID: ${{ secrets.TMP_PKCS11_E2E_REPEATER_ID }}
       SOFTHSM_DIR: ${{ github.workspace }}/.pkcs11-tools/SoftHSM2

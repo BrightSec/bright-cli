@@ -4,7 +4,6 @@ import { Pkcs11Cert } from '../Pkcs11Cert';
 describe('Pkcs11PinStore', () => {
   const cert = (): Pkcs11Cert => ({
     hostname: 'example.com',
-    cert: 'token',
     maxConcurrency: 1
   });
 

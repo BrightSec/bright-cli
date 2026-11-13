@@ -2452,7 +2452,6 @@ describe('HttpRequestExecutor', () => {
   describe('prepare', () => {
     const cert: Pkcs11Cert = {
       hostname: 'example.com',
-      cert: 'token',
       maxConcurrency: 1
     };
 

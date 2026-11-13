@@ -20,6 +20,8 @@ describe('DefaultPkcs11ModuleLocator', () => {
     'C:\\Program Files (x86)\\Gemalto\\IDGo 800 PKCS#11\\IDPrimePKCS1164.dll';
   const YUBICO =
     'C:\\Program Files\\Yubico\\Yubico PIV Tool\\bin\\libykcs11.dll';
+  const BIT4ID_X = 'C:\\Windows\\System32\\bit4xpki.dll';
+  const BIT4ID_I = 'C:\\Windows\\System32\\bit4ipki.dll';
   const OPENSC =
     'C:\\Program Files\\OpenSC Project\\OpenSC\\pkcs11\\opensc-pkcs11.dll';
 
@@ -51,11 +53,12 @@ describe('DefaultPkcs11ModuleLocator', () => {
     results: Record<string, Pkcs11ProbeResult> = {}
   ) => {
     const probe = jest.fn(
-      (path: string): Pkcs11ProbeResult => results[path] ?? loaded()
+      (path: string, _env: NodeJS.ProcessEnv): Pkcs11ProbeResult =>
+        results[path] ?? loaded()
     );
     const locator = new DefaultPkcs11ModuleLocator({
       platform: 'win32',
-      env,
+      env: { ...env, CARD_PIN: '1234' },
       exists: (path: string) => path in files,
       readArch: (path: string) => files[path],
       probe
@@ -136,6 +139,80 @@ describe('DefaultPkcs11ModuleLocator', () => {
       expect(result.path).toBe(YUBICO);
     });
 
+    it('should prefer a later library that shows every token named in --pkcs11-cert', () => {
+      // arrange
+      const { locator } = machine(
+        { [SAC_ETOKEN]: 'x64', [OPENSC]: 'x64' },
+        { [SAC_ETOKEN]: loaded('a'), [OPENSC]: loaded('a', 'b') }
+      );
+
+      // act
+      const result = locator.locate([
+        cert({ hostname: 'a.example.com', token: 'a' }),
+        cert({ hostname: 'b.example.com', token: 'b' })
+      ]);
+
+      // assert
+      expect(result).toMatchObject({
+        path: OPENSC,
+        alternatives: [SAC_ETOKEN]
+      });
+    });
+
+    it('should pick the library that shows the most named tokens and warn about the rest', () => {
+      // arrange
+      const { locator } = machine(
+        { [SAC_ETOKEN]: 'x64', [YUBICO]: 'x64' },
+        { [SAC_ETOKEN]: loaded('a'), [YUBICO]: loaded('b', 'c') }
+      );
+
+      // act
+      const result = locator.locate([
+        cert({ token: 'a' }),
+        cert({ token: 'b' }),
+        cert({ token: 'c' })
+      ]);
+
+      // assert
+      expect(result.path).toBe(YUBICO);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('no PKCS#11 library found shows token "a"')
+      );
+    });
+
+    it("should try a product's next library when the first one does not show the token", () => {
+      // arrange
+      const { locator } = machine(
+        { [BIT4ID_X]: 'x64', [BIT4ID_I]: 'x64' },
+        { [BIT4ID_X]: loaded(), [BIT4ID_I]: loaded('card') }
+      );
+
+      // act
+      const result = locator.locate([cert()]);
+
+      // assert
+      expect(result).toMatchObject({
+        path: BIT4ID_I,
+        product: 'Bit4id Universal Middleware',
+        alternatives: [BIT4ID_X]
+      });
+    });
+
+    it('should not pass the PIN variables of --pkcs11-cert to the probe', () => {
+      // arrange
+      const { locator, probe } = machine(
+        { [SAC_IDPRIME]: 'x64' },
+        { [SAC_IDPRIME]: loaded('card') }
+      );
+
+      // act
+      locator.locate([cert({ pinEnv: 'card_pin' })]);
+
+      // assert
+      const probeEnv = probe.mock.calls[0][1];
+      expect(probeEnv).toEqual(env);
+    });
+
     it('should stop probing once a library shows a token', () => {
       // arrange
       const { locator, probe } = machine(
@@ -180,9 +257,7 @@ describe('DefaultPkcs11ModuleLocator', () => {
       // assert
       expect(result.path).toBe(SAC_IDPRIME);
       expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'none of the PKCS#11 libraries found shows token "other"'
-        )
+        expect.stringContaining('no PKCS#11 library found shows token "other"')
       );
     });
 
@@ -215,7 +290,9 @@ describe('DefaultPkcs11ModuleLocator', () => {
       locator.locate([cert()]);
 
       // assert
-      expect(probe.mock.calls).toEqual([[OPENSC]]);
+      expect(
+        probe.mock.calls.map(([path]: [string, NodeJS.ProcessEnv]) => path)
+      ).toEqual([OPENSC]);
     });
 
     it('should not probe a library whose path the OpenSSL config cannot hold', () => {

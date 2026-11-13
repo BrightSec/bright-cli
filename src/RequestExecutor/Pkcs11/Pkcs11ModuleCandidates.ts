@@ -169,10 +169,17 @@ export const resolvePkcs11ModuleCandidates = (
   candidates: readonly Pkcs11ModuleCandidate[] = CANDIDATES[platform] ?? []
 ): Pkcs11ModuleCandidate[] => {
   const { normalize } = platform === 'win32' ? win32 : posix;
+  // A variable set to a relative or network path would turn a well-known
+  // location into one anybody may write to.
+  const isLocalAbsolute = (path: string): boolean =>
+    platform === 'win32' ? /^[A-Za-z]:\\/.test(path) : posix.isAbsolute(path);
   const resolve = (paths: readonly string[]): string[] =>
     paths
       .map((path: string) => expand(path, env, normalize))
-      .filter((path: string | undefined): path is string => !!path);
+      .filter(
+        (path: string | undefined): path is string =>
+          !!path && isLocalAbsolute(path)
+      );
 
   return candidates.map((candidate: Pkcs11ModuleCandidate) => ({
     ...candidate,

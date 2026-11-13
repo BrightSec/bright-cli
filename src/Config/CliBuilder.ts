@@ -162,15 +162,13 @@ export class CliBuilder {
         return argv;
       })
 
-      // Before validation: the repeater's checks already log (PKCS#11 library discovery).
       .middleware(
         (args: Arguments) =>
           (logger.logLevel = !isNaN(+args.logLevel)
             ? (+args.logLevel as unknown as LogLevel)
             : LogLevel[
                 args.logLevel?.toString().toUpperCase() as keyof typeof LogLevel
-              ]),
-        true
+              ])
       )
       .usage('Usage: $0 <command> [options] [<file | scan>]')
       .pkgConf('bright', info.cwd)

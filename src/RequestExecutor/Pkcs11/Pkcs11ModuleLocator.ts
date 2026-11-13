@@ -39,7 +39,8 @@ export interface DefaultPkcs11ModuleLocatorOptions {
   candidates?: readonly Pkcs11ModuleCandidate[];
   exists?: (path: string) => boolean;
   readArch?: (path: string) => BinaryArch;
-  probe?: (path: string) => Pkcs11ProbeResult;
+  /** `env` is the locator's environment without the PIN variables of `--pkcs11-cert`. */
+  probe?: (path: string, env: NodeJS.ProcessEnv) => Pkcs11ProbeResult;
   isConfigSafe?: (path: string) => boolean;
   now?: () => number;
 }
@@ -65,7 +66,10 @@ export class DefaultPkcs11ModuleLocator implements Pkcs11ModuleLocator {
   private readonly candidates?: readonly Pkcs11ModuleCandidate[];
   private readonly exists: (path: string) => boolean;
   private readonly readArch: (path: string) => BinaryArch;
-  private readonly probe: (path: string) => Pkcs11ProbeResult;
+  private readonly probe: (
+    path: string,
+    env: NodeJS.ProcessEnv
+  ) => Pkcs11ProbeResult;
   private readonly isConfigSafe: (path: string) => boolean;
   private readonly now: () => number;
 
@@ -86,8 +90,8 @@ export class DefaultPkcs11ModuleLocator implements Pkcs11ModuleLocator {
     this.readArch = readArch;
     this.probe =
       probe ??
-      ((path: string) =>
-        new Pkcs11ModuleProbeRunner({ env, platform }).probe(path));
+      ((path: string, probeEnv: NodeJS.ProcessEnv) =>
+        new Pkcs11ModuleProbeRunner({ env: probeEnv, platform }).probe(path));
     this.isConfigSafe = isConfigSafe;
     this.now = now;
   }
@@ -108,15 +112,24 @@ export class DefaultPkcs11ModuleLocator implements Pkcs11ModuleLocator {
         certs.map(({ token }: Pkcs11Cert) => token).filter(Boolean) as string[]
       )
     ];
-    const diagnostics: Pkcs11ModuleDiagnostic[] = [];
+    const probeEnv = this.withoutPins(certs);
+    const checked = candidates.reduce(
+      (count: number, { x64, x86 }: Pkcs11ModuleCandidate) =>
+        count + x64.length + x86.length,
+      0
+    );
+    const diagnostics: Pkcs11ModuleDiagnostic[] = candidates.flatMap(
+      (candidate: Pkcs11ModuleCandidate) => this.inspect32Bit(candidate)
+    );
+    // A product may ship several libraries for different card families
+    // (Bit4id), so one that loads without the wanted token does not end the search.
+    const paths = candidates.flatMap((candidate: Pkcs11ModuleCandidate) =>
+      candidate.x64.map((path: string) => ({ candidate, path }))
+    );
     const loaded: LoadedModule[] = [];
-    let checked = 0;
 
-    for (const candidate of candidates) {
-      checked += candidate.x64.length + candidate.x86.length;
-      diagnostics.push(...this.inspect32Bit(candidate));
-
-      const module = this.loadFirst(candidate, diagnostics);
+    for (const { candidate, path } of paths) {
+      const module = this.load(candidate, path, probeEnv, diagnostics);
 
       if (!module) {
         continue;
@@ -124,13 +137,14 @@ export class DefaultPkcs11ModuleLocator implements Pkcs11ModuleLocator {
 
       loaded.push(module);
 
-      if (this.isWanted(module, wantedLabels)) {
+      // All certificates share one library, so it must show every wanted token.
+      if (this.coverage(module, wantedLabels) === this.full(wantedLabels)) {
         return this.select(module, loaded, wantedLabels);
       }
     }
 
     if (loaded.length) {
-      return this.select(loaded[0], loaded, wantedLabels);
+      return this.select(this.best(loaded, wantedLabels), loaded, wantedLabels);
     }
 
     throw new Pkcs11ModuleNotFoundError(
@@ -142,12 +156,40 @@ export class DefaultPkcs11ModuleLocator implements Pkcs11ModuleLocator {
     );
   }
 
-  private isWanted(module: LoadedModule, wantedLabels: string[]): boolean {
+  /** @returns how many wanted labels `module` shows; without labels, 1 when it shows any token. */
+  private coverage(module: LoadedModule, wantedLabels: string[]): number {
+    const labels = module.tokens.map(({ label }: Pkcs11ProbeToken) => label);
+
     return wantedLabels.length
-      ? module.tokens.some(({ label }: Pkcs11ProbeToken) =>
-          wantedLabels.includes(label)
-        )
-      : module.tokens.length > 0;
+      ? wantedLabels.filter((label: string) => labels.includes(label)).length
+      : Math.min(labels.length, 1);
+  }
+
+  private full(wantedLabels: string[]): number {
+    return wantedLabels.length || 1;
+  }
+
+  // Ties go to the library tried first.
+  private best(loaded: LoadedModule[], wantedLabels: string[]): LoadedModule {
+    return loaded.reduce((best: LoadedModule, module: LoadedModule) =>
+      this.coverage(module, wantedLabels) > this.coverage(best, wantedLabels)
+        ? module
+        : best
+    );
+  }
+
+  // The probed library runs in the child process and could read the PIN there.
+  private withoutPins(certs: Pkcs11Cert[]): NodeJS.ProcessEnv {
+    const names = certs
+      .map(({ pinEnv }: Pkcs11Cert) => pinEnv?.toUpperCase())
+      .filter(Boolean);
+
+    return Object.fromEntries(
+      Object.entries(this.env).filter(
+        ([name]: [string, string | undefined]) =>
+          !names.includes(name.toUpperCase())
+      )
+    );
   }
 
   private select(
@@ -190,58 +232,59 @@ export class DefaultPkcs11ModuleLocator implements Pkcs11ModuleLocator {
       }));
   }
 
-  /** @returns the first x64 path of `candidate` that loads; records why the others did not. */
-  private loadFirst(
+  /** @returns the library at `path` if it loads; otherwise records why not. */
+  private load(
     candidate: Pkcs11ModuleCandidate,
+    path: string,
+    probeEnv: NodeJS.ProcessEnv,
     diagnostics: Pkcs11ModuleDiagnostic[]
   ): LoadedModule | undefined {
     const { product } = candidate;
 
-    for (const path of candidate.x64) {
-      if (!this.found(path)) {
-        continue;
-      }
-
-      const arch = this.readArch(path);
-
-      if (arch !== 'x64') {
-        diagnostics.push({
-          path,
-          product,
-          rejection: { reason: 'architecture', arch }
-        });
-        continue;
-      }
-
-      if (!this.isConfigSafe(path)) {
-        diagnostics.push({
-          path,
-          product,
-          rejection: { reason: 'unsupported-path' }
-        });
-        continue;
-      }
-
-      const result = this.timedProbe(path);
-
-      if (isProbeFailed(result)) {
-        diagnostics.push({
-          path,
-          product,
-          rejection: { reason: result.reason, detail: result.detail }
-        });
-        continue;
-      }
-
-      return {
-        candidate,
-        path,
-        library: result.library,
-        tokens: result.tokens
-      };
+    if (!this.found(path)) {
+      return undefined;
     }
 
-    return undefined;
+    const arch = this.readArch(path);
+
+    if (arch !== 'x64') {
+      diagnostics.push({
+        path,
+        product,
+        rejection: { reason: 'architecture', arch }
+      });
+
+      return undefined;
+    }
+
+    if (!this.isConfigSafe(path)) {
+      diagnostics.push({
+        path,
+        product,
+        rejection: { reason: 'unsupported-path' }
+      });
+
+      return undefined;
+    }
+
+    const result = this.timedProbe(path, probeEnv);
+
+    if (isProbeFailed(result)) {
+      diagnostics.push({
+        path,
+        product,
+        rejection: { reason: result.reason, detail: result.detail }
+      });
+
+      return undefined;
+    }
+
+    return {
+      candidate,
+      path,
+      library: result.library,
+      tokens: result.tokens
+    };
   }
 
   private found(path: string): boolean {
@@ -251,9 +294,12 @@ export class DefaultPkcs11ModuleLocator implements Pkcs11ModuleLocator {
     return exists;
   }
 
-  private timedProbe(path: string): Pkcs11ProbeResult {
+  private timedProbe(
+    path: string,
+    probeEnv: NodeJS.ProcessEnv
+  ): Pkcs11ProbeResult {
     const startedAt = this.now();
-    const result = this.probe(path);
+    const result = this.probe(path, probeEnv);
     const summary = isProbeFailed(result)
       ? `${result.reason}: ${result.detail}`
       : `loaded "${result.library}", ${result.tokens.length} token(s)`;

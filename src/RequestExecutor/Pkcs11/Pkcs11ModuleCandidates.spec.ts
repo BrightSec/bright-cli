@@ -77,6 +77,24 @@ describe('resolvePkcs11ModuleCandidates', () => {
     ).not.toMatch(/Windows|\(x86\)|%/);
   });
 
+  it.each([
+    { name: 'a relative path', value: 'Program Files' },
+    { name: 'a network path', value: '\\\\server\\share' }
+  ])('should leave out the paths whose variable holds $name', ({ value }) => {
+    // act
+    const result = resolvePkcs11ModuleCandidates('win32', {
+      ProgramFiles: value,
+      SystemRoot: 'C:\\Windows'
+    });
+
+    // assert
+    expect(
+      result
+        .flatMap(({ x64, x86 }) => [...x64, ...x86])
+        .every((path: string) => path.startsWith('C:\\Windows\\'))
+    ).toBe(true);
+  });
+
   it.each(['linux', 'darwin'] as NodeJS.Platform[])(
     'should have no candidates on %s',
     (platform: NodeJS.Platform) => {

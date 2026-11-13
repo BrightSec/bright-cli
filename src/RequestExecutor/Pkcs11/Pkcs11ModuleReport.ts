@@ -49,7 +49,7 @@ export class Pkcs11ModuleReport {
     );
   }
 
-  /** @returns a warning when the chosen library does not show the wanted token yet, otherwise undefined. */
+  /** @returns a warning when the chosen library does not show every wanted token yet, otherwise undefined. */
   public static missingToken(
     discovery: Pkcs11ModuleDiscovery,
     wantedLabels: string[]
@@ -59,19 +59,22 @@ export class Pkcs11ModuleReport {
     }
 
     const labels = discovery.tokens.map(({ label }) => label);
+    const missing = wantedLabels.filter(
+      (label: string) => !labels.includes(label)
+    );
 
-    if (
-      !wantedLabels.length ||
-      wantedLabels.some((label: string) => labels.includes(label))
-    ) {
+    if (!missing.length) {
       return undefined;
     }
 
-    return `PKCS#11: none of the PKCS#11 libraries found shows token ${wantedLabels
-      .map((label: string) => `"${label}"`)
-      .join(' or ')}; the ${discovery.product} library has ${labels
-      .map((label: string) => `"${label}"`)
-      .join(', ')}.`;
+    const quote = (values: string[]) =>
+      values.map((label: string) => `"${label}"`).join(', ');
+
+    return `PKCS#11: no PKCS#11 library found shows token ${quote(
+      missing
+    )}, so its --pkcs11-cert entries fail until it is present; the ${
+      discovery.product
+    } library shows ${quote(labels)}.`;
   }
 
   public static runtimeHint(discovery: Pkcs11ModuleDiscovery): string {

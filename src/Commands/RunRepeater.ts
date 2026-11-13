@@ -233,7 +233,7 @@ export class RunRepeater implements CommandModule {
           'Client certificate whose private key is on a PKCS#11 token (smart card, USB token, HSM), for HTTPS targets. Uses the library from --pkcs11-module; on Windows, without it, the Repeater looks for the library of common card software. ' +
           'Required: "hostname". The PIN comes from "pinFile" or "pinEnv"; with neither, the Repeater asks for it in the terminal at startup if the token needs one. ' +
           'Optional: "port", "token" (token label), "label" and "id" (CKA_LABEL and hex CKA_ID of the certificate on the token, chosen at startup when absent), ' +
-          '"cert" ("token" or a PEM file path; with a file, "label" and "id" select the private key), "maxConcurrency" (default 1). ' +
+          '"certFile" (PEM file with the certificate instead of the one on the token; "label" and "id" then select the private key), "maxConcurrency" (default 1). ' +
           'Example: {"hostname": "example.com", "pinFile": "/run/secrets/card.pin", "label": "X.509 Certificate for PIV Authentication"}'
       })
       .option('pkcs11-module', {

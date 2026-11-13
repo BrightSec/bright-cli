@@ -45,13 +45,13 @@ describe('Pkcs11Client', () => {
       expect(env.OPENSSL_CONF).toBe('/tmp/x/openssl.cnf');
     });
 
-    it('should put the provider directory first in PATH on Windows', () => {
+    it('should put the provider and module directories first in PATH on Windows', () => {
       // arrange
       const env: NodeJS.ProcessEnv = { PATH: 'C:/Windows' };
 
       // act
       new Pkcs11Client(
-        { module: '/opt/vendor.so', certs: [cert()] },
+        { module: 'C:/Vendor/bin/vendor.dll', certs: [cert()] },
         dependencies({
           env,
           platform: 'win32',
@@ -60,7 +60,9 @@ describe('Pkcs11Client', () => {
       );
 
       // assert
-      expect(env.PATH).toBe(`C:/Bright${delimiter}C:/Windows`);
+      expect(env.PATH).toBe(
+        ['C:/Bright', 'C:/Vendor/bin', 'C:/Windows'].join(delimiter)
+      );
     });
 
     it('should not set the Windows-only variables on other platforms', () => {
@@ -148,6 +150,35 @@ describe('Pkcs11Client', () => {
       await expect(result).rejects.toMatchObject({
         code: Pkcs11ErrorCode.MODULE_LOAD_FAILED,
         message: 'provider not found'
+      });
+    });
+
+    it('should say that the library was picked automatically when it fails to load', async () => {
+      // arrange
+      const client = new Pkcs11Client(
+        {
+          module: 'C:/Windows/System32/eTPKCS11.dll',
+          certs: [cert()],
+          discovery: {
+            path: 'C:/Windows/System32/eTPKCS11.dll',
+            product: 'Thales SafeNet Authentication Client (eToken)',
+            library: 'SafeNet, Inc. SafeNet eToken PKCS#11',
+            tokens: [],
+            alternatives: []
+          }
+        },
+        dependencies()
+      );
+
+      // act
+      const result = client.identity(cert());
+
+      // assert
+      await expect(result).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.MODULE_LOAD_FAILED,
+        message: expect.stringContaining(
+          'The PKCS#11 library C:/Windows/System32/eTPKCS11.dll was selected automatically because --pkcs11-module is not set.'
+        )
       });
     });
   });

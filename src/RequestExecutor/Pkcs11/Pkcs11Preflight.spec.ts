@@ -147,6 +147,7 @@ describe('Pkcs11Preflight', () => {
       readFile?: (path: string) => string;
       platform?: NodeJS.Platform;
       pins?: Pkcs11PinStore;
+      moduleHint?: string;
     } = {}
   ) => {
     const loader: Pkcs11ModuleLoader = { load: jest.fn(() => module) };
@@ -162,6 +163,60 @@ describe('Pkcs11Preflight', () => {
   };
 
   describe('identity', () => {
+    const hint = 'The PKCS#11 library C:/x.dll was selected automatically.';
+
+    it('should append the module hint when the wanted token is missing', async () => {
+      // arrange
+      const { preflight } = create(fakeModule({ tokens: [] }), {
+        moduleHint: hint
+      });
+
+      // act
+      const result = preflight.identity(descriptor({ token: 'card' }));
+
+      // assert
+      await expect(result).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.TOKEN_NOT_FOUND,
+        retryable: true,
+        message: expect.stringMatching(
+          /^Token "card" not found; .* The PKCS#11 library C:\/x\.dll was selected automatically\.$/
+        )
+      });
+    });
+
+    it('should not append the module hint to a rejected PIN', async () => {
+      // arrange
+      const module = fakeModule({
+        login: jest.fn(() => {
+          throw new Pkcs11ModuleError('CKR_PIN_INCORRECT');
+        })
+      });
+      const { preflight } = create(module, { moduleHint: hint });
+
+      // act
+      const result = preflight.identity(descriptor());
+
+      // assert
+      await expect(result).rejects.toMatchObject({
+        code: Pkcs11ErrorCode.PIN_INCORRECT,
+        message: expect.not.stringContaining(hint)
+      });
+    });
+
+    it('should leave messages unchanged without a module hint', async () => {
+      // arrange
+      const { preflight } = create(fakeModule({ tokens: [] }));
+
+      // act
+      const result = preflight.identity(descriptor({ token: 'card' }));
+
+      // assert
+      await expect(result).rejects.toMatchObject({
+        message:
+          'Token "card" not found; no token is present (is the card inserted?).'
+      });
+    });
+
     it('should resolve the key and the certificate on the token', async () => {
       // arrange
       const { preflight } = create(fakeModule());

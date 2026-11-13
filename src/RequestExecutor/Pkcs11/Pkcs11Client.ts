@@ -1,6 +1,7 @@
 import { CurlHandlePool } from './CurlHandlePool';
 import { Pkcs11Error, Pkcs11ErrorCode } from './Pkcs11Error';
 import { Pkcs11ModuleLoader } from './Pkcs11Module';
+import { Pkcs11ModuleReport } from './Pkcs11ModuleReport';
 import { Pkcs11jsModuleLoader } from './Pkcs11jsModuleLoader';
 import { Pkcs11OpenSslConfig } from './Pkcs11OpenSslConfig';
 import { Pkcs11PinPrompt } from './Pkcs11PinPrompt';
@@ -64,9 +65,12 @@ export class Pkcs11Client {
       env.OPENSSL_CONF = config.path;
 
       if (platform === 'win32') {
-        // Windows resolves the provider's own DLL dependencies
-        // (libcrypto-3-x64.dll) through PATH, not its directory.
-        env.PATH = `${dirname(provider)}${delimiter}${env.PATH ?? ''}`;
+        // Windows resolves a DLL's own dependencies through PATH, not its
+        // directory: the provider needs libcrypto-3-x64.dll, and vendor
+        // libraries such as YKCS11 need DLLs from their own folder.
+        env.PATH = [dirname(provider), dirname(options.module), env.PATH ?? '']
+          .filter(Boolean)
+          .join(delimiter);
         // OpenSSL reads OPENSSL_CONF through the CRT's getenv(), which only sees
         // the environment as it was at process start. With this flag set it
         // reads through GetEnvironmentVariableW, which sees the value above.
@@ -77,7 +81,13 @@ export class Pkcs11Client {
       this.preflight = new Pkcs11Preflight(
         loader,
         { module: options.module, provider: config.name },
-        { env, pins: this.pins }
+        {
+          env,
+          pins: this.pins,
+          moduleHint: options.discovery
+            ? Pkcs11ModuleReport.runtimeHint(options.discovery)
+            : undefined
+        }
       );
     } catch (e) {
       this.setupError =

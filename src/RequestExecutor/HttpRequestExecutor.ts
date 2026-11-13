@@ -128,7 +128,7 @@ export class HttpRequestExecutor implements RequestExecutor {
       const pkcs11Certs = this.pkcs11 ? this.pkcs11.match(options.url) : [];
 
       return await (pkcs11Certs.length
-        ? this.executeWithPkcs11(options, pkcs11Certs)
+        ? this.executeWithPkcs11Certs(options, pkcs11Certs)
         : this.executeWithFileCerts(options));
     } catch (err) {
       const { cause } = err;
@@ -793,7 +793,7 @@ export class HttpRequestExecutor implements RequestExecutor {
 
   // Certificates are tried one after another: a parallel attempt per
   // certificate would multiply PIN checks and signatures on the card.
-  private async executeWithPkcs11(
+  private async executeWithPkcs11Certs(
     request: Request,
     certs: Pkcs11Cert[]
   ): Promise<Response> {

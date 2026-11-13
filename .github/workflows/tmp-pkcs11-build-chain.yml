@@ -2,8 +2,9 @@
 #
 # Dry run of the artifact chain that deploy.yml runs after semantic-release cuts
 # a release on next: npm package, pkg executables + MSI, Docker image and Helm
-# chart. Nothing is published, signed or attached to a release; every artifact
-# is smoke-tested and kept as a workflow artifact instead.
+# chart. Nothing is published or attached to a release; every artifact is
+# smoke-tested and kept as a workflow artifact instead. The Windows executable,
+# roots.exe and the MSI are code signed as in deploy.yml.
 name: TMP / PKCS#11 build chain
 
 on:
@@ -141,9 +142,87 @@ jobs:
         if: startsWith(matrix.os, 'win')
         run: node .\tools\scripts\set-windows-version-info.mjs .\bin\cli.exe
 
+      # DigiCert KeyLocker code signing, the same steps as in deploy.yml.
+      - name: Prepare Windows code signing
+        id: signing
+        if: startsWith(matrix.os, 'win')
+        shell: bash
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+        run: |
+          if [ -z "$SM_API_KEY" ]; then
+            echo "DigiCert KeyLocker secrets are not configured; Windows artifacts will not be signed."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$SM_CLIENT_CERT_FILE_B64" | base64 --decode > "${RUNNER_TEMP}/client-auth-cert.p12"
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install DigiCert KeyLocker client tools
+        if: startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        uses: digicert/code-signing-software-trust-action@v1
+        env:
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}/client-auth-cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+
+      - name: Sync code signing certificate to the Windows store
+        if: startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        env:
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}/client-auth-cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+        run: smctl windows certsync
+        shell: pwsh
+
+      - name: Sign Windows executable
+        if: startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        env:
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}/client-auth-cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CODE_SIGNING_CERT_SHA1_HASH: ${{ secrets.SM_CODE_SIGNING_CERT_SHA1_HASH }}
+        run: .\tools\scripts\sign-windows.ps1 -FilePath .\bin\cli.exe
+        shell: pwsh
+
+      # roots.exe (from the win-ca package) is bundled into the MSI, so it is
+      # staged and signed here before build-msi.ps1 packages it.
+      - name: Sign bundled roots.exe
+        if: startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        env:
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}/client-auth-cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CODE_SIGNING_CERT_SHA1_HASH: ${{ secrets.SM_CODE_SIGNING_CERT_SHA1_HASH }}
+        run: |
+          Copy-Item .\node_modules\win-ca\lib\roots.exe -Destination .\bin\roots.exe
+          .\tools\scripts\sign-windows.ps1 -FilePath .\bin\roots.exe
+        shell: pwsh
+
       - name: Build MSI
         if: startsWith(matrix.os, 'win')
         run: .\tools\scripts\build-msi.ps1
+        shell: pwsh
+
+      - name: Sign Windows installer (MSI)
+        if: startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        env:
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}/client-auth-cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CODE_SIGNING_CERT_SHA1_HASH: ${{ secrets.SM_CODE_SIGNING_CERT_SHA1_HASH }}
+        run: .\tools\scripts\sign-windows.ps1 -FilePath .\bin\bright-cli.msi
+        shell: pwsh
+
+      - name: Remove decoded client-auth certificate
+        if: always() && startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        run: Remove-Item -Path "${{ runner.temp }}/client-auth-cert.p12" -Force -ErrorAction SilentlyContinue
         shell: pwsh
 
       - name: Smoke-test executable

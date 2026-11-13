@@ -43,6 +43,7 @@ export const runRepeater = async (
     {} as CertificatesCache,
     { resolve: (): [] => [] } as unknown as CertificatesResolver
   );
+  await executor.prepare();
 
   const responses: RepeaterResult['responses'] = [];
   const queue = [...job.urls];

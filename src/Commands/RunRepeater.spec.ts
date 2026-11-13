@@ -3,6 +3,10 @@ import { RunRepeater } from './RunRepeater';
 import { CliBuilder, CliConfig, CliInfo, ConfigReader } from '../Config';
 import { DefaultRepeaterServerOptions } from '../Repeater';
 import { RequestExecutorOptions } from '../RequestExecutor';
+import { Pkcs11ModuleLocator } from '../RequestExecutor/Pkcs11/Pkcs11ModuleLocator';
+import { Pkcs11ModuleNotFoundError } from '../RequestExecutor/Pkcs11/Pkcs11ModuleNotFoundError';
+import { Pkcs11ModuleDiscovery } from '../RequestExecutor/Pkcs11/Pkcs11ModuleReport';
+import { Pkcs11PinPromptCancelledError } from '../RequestExecutor/Pkcs11/Pkcs11PinPrompt';
 import container from '../container';
 import { anything, instance, mock, when } from 'ts-mockito';
 import { Arguments, Argv } from 'yargs';
@@ -61,14 +65,29 @@ describe('RunRepeater', () => {
     }).build({ commands: [runRepeater] });
   };
 
+  // Discovery would search the machine running the tests; where it is not
+  // supported (Linux, macOS), the locator returns undefined.
+  const unsupportedLocator: Pkcs11ModuleLocator = {
+    locate: () => undefined
+  };
+
   // A parse that fails validation leaves the yargs singleton in a state that
   // breaks the next parse, so failing cases run against isolated modules.
-  const isolatedCli = (): Argv => {
+  const isolatedCli = (
+    locator: Pkcs11ModuleLocator = unsupportedLocator
+  ): Argv => {
     let isolated: Argv;
 
     jest.isolateModules(() => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { RunRepeater: IsolatedRunRepeater } = require('./RunRepeater');
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      require('../container').default.register(
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        require('../RequestExecutor/Pkcs11/Pkcs11ModuleLocator')
+          .Pkcs11ModuleLocator,
+        { useValue: locator }
+      );
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const config = require('../Config');
       const runRepeater = new IsolatedRunRepeater();
@@ -87,9 +106,28 @@ describe('RunRepeater', () => {
     const module = join(dir, 'vendor-pkcs11.so');
     const pinFile = join(dir, 'card.pin');
 
+    const locate = jest.fn<
+      Pkcs11ModuleDiscovery | undefined,
+      Parameters<Pkcs11ModuleLocator['locate']>
+    >();
+    const discovery: Pkcs11ModuleDiscovery = {
+      path: 'C:\\Program Files\\SafeNet\\Authentication\\SAC\\x64\\IDPrimePKCS1164.dll',
+      product: 'Thales SafeNet Authentication Client (IDPrime)',
+      library: 'Thales IDPrime PKCS#11',
+      tokens: [{ label: 'card', serial: '01' }],
+      alternatives: []
+    };
+
     beforeAll(() => {
       writeFileSync(module, '');
       writeFileSync(pinFile, '1234');
+    });
+
+    beforeEach(() => {
+      locate.mockReset().mockReturnValue(undefined);
+      container.register<Pkcs11ModuleLocator>(Pkcs11ModuleLocator, {
+        useValue: { locate }
+      });
     });
 
     afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -169,6 +207,71 @@ describe('RunRepeater', () => {
         'Option --pkcs11-module is required with --pkcs11-cert'
       );
       expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('should connect the library found automatically when --pkcs11-module is not set', async () => {
+      // arrange
+      locate.mockReturnValue(discovery);
+      const entry = { hostname: 'a.example.com', pinFile };
+
+      // act
+      await parseRepeater(['--pkcs11-cert', JSON.stringify(entry)]);
+
+      // assert
+      expect(handler).toHaveBeenCalled();
+      expect(locate).toHaveBeenCalledWith([
+        expect.objectContaining({ hostname: 'a.example.com' })
+      ]);
+      expect(
+        container.resolve<RequestExecutorOptions>(RequestExecutorOptions).pkcs11
+      ).toEqual({
+        module: discovery.path,
+        provider: undefined,
+        certs: [expect.objectContaining({ hostname: 'a.example.com' })],
+        discovery
+      });
+    });
+
+    it('should not start the repeater when no PKCS#11 library is found automatically', async () => {
+      // arrange
+      const locator: Pkcs11ModuleLocator = {
+        locate: () => {
+          throw new Pkcs11ModuleNotFoundError(
+            'No PKCS#11 library for your smart card was found'
+          );
+        }
+      };
+
+      // act
+      const result = settle(() =>
+        parseRepeater(
+          [
+            '--pkcs11-cert',
+            JSON.stringify({ hostname: 'a.example.com', pinFile })
+          ],
+          isolatedCli(locator)
+        )
+      );
+
+      // assert
+      await expect(result).rejects.toThrow(
+        'No PKCS#11 library for your smart card was found'
+      );
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('should not look for a library when --pkcs11-module is given', async () => {
+      // act
+      await parseRepeater([
+        '--pkcs11-module',
+        module,
+        '--pkcs11-cert',
+        JSON.stringify({ hostname: 'a.example.com', pinFile })
+      ]);
+
+      // assert
+      expect(handler).toHaveBeenCalled();
+      expect(locate).not.toHaveBeenCalled();
     });
 
     it('should not start the repeater when --pkcs11-module does not exist', async () => {
@@ -401,6 +504,7 @@ describe('RunRepeater', () => {
 
       // assert
       expect(handler).toHaveBeenCalled();
+      expect(locate).not.toHaveBeenCalled();
     });
 
     it('should parse a --cert entry given as a JSON string on the command line', async () => {
@@ -473,5 +577,124 @@ describe('RunRepeater', () => {
         ]);
       }
     );
+  });
+
+  describe('handler', () => {
+    const SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
+    let listeners: Map<string, NodeJS.SignalsListener[]>;
+
+    beforeEach(() => {
+      listeners = new Map(
+        SIGNALS.map((signal) => [signal, process.listeners(signal)])
+      );
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+      process.exitCode = undefined;
+      for (const signal of SIGNALS) {
+        process
+          .listeners(signal)
+          .filter((listener) => !listeners.get(signal)?.includes(listener))
+          .forEach((listener) => process.off(signal, listener));
+      }
+    });
+
+    const arrange = (prepare: () => Promise<void>) => {
+      const calls: string[] = [];
+      const launcher = {
+        run: jest.fn(() => {
+          calls.push('run');
+
+          return Promise.resolve();
+        }),
+        close: jest.fn(() => Promise.resolve()),
+        install: jest.fn(() => Promise.resolve())
+      };
+      const executor = {
+        prepare: jest.fn(() => {
+          calls.push('prepare');
+
+          return prepare();
+        })
+      };
+      jest.spyOn(container, 'resolve').mockReturnValue(launcher);
+      jest.spyOn(container, 'resolveAll').mockReturnValue([executor]);
+
+      return { calls, launcher, executor };
+    };
+
+    const args = (extra: Record<string, unknown> = {}): Arguments => ({
+      _: [],
+      $0: 'bright-cli',
+      id: repeaterId,
+      ...extra
+    });
+
+    it('should prepare the executors before the Repeater connects', async () => {
+      // arrange
+      const { calls } = arrange(() => Promise.resolve());
+
+      // act
+      await new RunRepeater().handler(args());
+
+      // assert
+      expect(calls).toEqual(['prepare', 'run']);
+    });
+
+    it('should not start the Repeater when PIN entry is cancelled', async () => {
+      // arrange
+      const { launcher } = arrange(() =>
+        Promise.reject(new Pkcs11PinPromptCancelledError())
+      );
+
+      // act
+      await new RunRepeater().handler(args());
+
+      // assert
+      expect(launcher.run).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('should pin the library found automatically in the daemon command line', async () => {
+      // arrange
+      const { launcher } = arrange(() => Promise.resolve());
+      const path = 'C:\\Windows\\System32\\eTPKCS11.dll';
+      const resolve = container.resolve as jest.Mock;
+      resolve.mockImplementation((token: unknown) =>
+        token === RequestExecutorOptions
+          ? { pkcs11: { module: path, certs: [], discovery: { path } } }
+          : launcher
+      );
+
+      // act
+      await new RunRepeater().handler(args({ daemon: true }));
+
+      // assert
+      expect(launcher.install).toHaveBeenCalledWith(['--pkcs11-module', path]);
+    });
+
+    it('should install the daemon with its own arguments only when the library was given', async () => {
+      // arrange
+      const { launcher } = arrange(() => Promise.resolve());
+
+      // act
+      await new RunRepeater().handler(args({ daemon: true }));
+
+      // assert
+      expect(launcher.install).toHaveBeenCalledWith([]);
+    });
+
+    it('should not prepare the executors when installing the daemon', async () => {
+      // arrange
+      const { executor, launcher } = arrange(() => Promise.resolve());
+
+      // act
+      await new RunRepeater().handler(args({ daemon: true }));
+
+      // assert
+      expect(launcher.install).toHaveBeenCalled();
+      expect(executor.prepare).not.toHaveBeenCalled();
+    });
   });
 });

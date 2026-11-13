@@ -9,6 +9,7 @@ import {
   Pkcs11PrivateKeyInfo,
   Pkcs11Token
 } from './Pkcs11Module';
+import { Pkcs11PinStore } from './Pkcs11PinStore';
 import { Pkcs11PublicKey } from './Pkcs11PublicKey';
 import { Pkcs11Uri } from './Pkcs11Uri';
 import { Pkcs11Cert } from '../Pkcs11Cert';
@@ -45,6 +46,13 @@ export interface Pkcs11PreflightOptions {
   readFile?: (path: string) => string;
   /** Decides how the example --pkcs11-cert in error messages is quoted. */
   platform?: NodeJS.Platform;
+  /** PINs typed at startup, for entries without "pinFile" and "pinEnv". */
+  pins?: Pkcs11PinStore;
+  /**
+   * Appended to failures that a different library could fix, when the
+   * library was picked automatically.
+   */
+  moduleHint?: string;
 }
 
 interface StoredFailure {
@@ -96,12 +104,20 @@ export class Pkcs11Preflight {
     'CKR_PIN_LEN_RANGE',
     'CKR_PIN_EXPIRED'
   ]);
+  private static readonly MODULE_RELATED_ERRORS: ReadonlySet<Pkcs11ErrorCode> =
+    new Set([
+      Pkcs11ErrorCode.MODULE_LOAD_FAILED,
+      Pkcs11ErrorCode.TOKEN_NOT_FOUND,
+      Pkcs11ErrorCode.KEY_NOT_FOUND
+    ]);
 
   private readonly retryAfterMs: number;
   private readonly now: () => number;
   private readonly env: NodeJS.ProcessEnv;
   private readonly readFile: (path: string) => string;
   private readonly platform: NodeJS.Platform;
+  private readonly pins: Pkcs11PinStore;
+  private readonly moduleHint?: string;
   private readonly inflight = new Map<Pkcs11Cert, Promise<Pkcs11Identity>>();
   private readonly identities = new Map<Pkcs11Cert, Pkcs11Identity>();
   private readonly failures = new Map<Pkcs11Cert, StoredFailure>();
@@ -117,7 +133,9 @@ export class Pkcs11Preflight {
       now = Date.now,
       env = process.env,
       readFile = (path: string) => readFileSync(path, 'utf8'),
-      platform = process.platform
+      platform = process.platform,
+      pins = new Pkcs11PinStore(),
+      moduleHint
     }: Pkcs11PreflightOptions = {}
   ) {
     this.retryAfterMs = retryAfterMs;
@@ -125,11 +143,27 @@ export class Pkcs11Preflight {
     this.env = env;
     this.readFile = readFile;
     this.platform = platform;
+    this.pins = pins;
+    this.moduleHint = moduleHint;
   }
 
   // The flags are single bits; this avoids bitwise operators, which the lint rules ban.
   private static hasFlag(flags: number, flag: number): boolean {
     return Math.floor(flags / flag) % 2 === 1;
+  }
+
+  /**
+   * Reads the token flags only: no session, no login.
+   *
+   * @throws when the module cannot be loaded or the token is not found.
+   */
+  public requiresPin(cert: Pkcs11Cert): boolean {
+    const token = this.selectToken(this.loadModule(), cert);
+
+    return Pkcs11Preflight.hasFlag(
+      token.flags,
+      Pkcs11Preflight.CKF_LOGIN_REQUIRED
+    );
   }
 
   /** @throws Pkcs11Error */
@@ -167,18 +201,31 @@ export class Pkcs11Preflight {
 
       return identity;
     } catch (e) {
-      const error =
+      const error = this.withModuleHint(
         e instanceof Pkcs11Error
           ? e
           : new Pkcs11Error(
               Pkcs11ErrorCode.MODULE_LOAD_FAILED,
               `PKCS#11 check for ${cert.hostname} failed: ${e?.message}`,
               true
-            );
+            )
+      );
       this.failures.set(cert, { error, at: this.now() });
       logger.error('PKCS#11: %s', error.message);
       throw error;
     }
+  }
+
+  // A wrong PIN is not the library's fault; suggesting another one there misleads.
+  private withModuleHint(error: Pkcs11Error): Pkcs11Error {
+    return this.moduleHint &&
+      Pkcs11Preflight.MODULE_RELATED_ERRORS.has(error.code)
+      ? new Pkcs11Error(
+          error.code,
+          `${error.message} ${this.moduleHint}`,
+          error.retryable
+        )
+      : error;
   }
 
   private resolveIdentity(cert: Pkcs11Cert): Pkcs11Identity {
@@ -801,6 +848,10 @@ export class Pkcs11Preflight {
   }
 
   private pin(cert: Pkcs11Cert): string {
+    if (!cert.pinFile && !cert.pinEnv) {
+      return this.typedPin(cert);
+    }
+
     const pin = cert.pinFile
       ? this.readPinFile(cert.pinFile)
       : this.env[cert.pinEnv];
@@ -812,6 +863,20 @@ export class Pkcs11Preflight {
           ? `The PIN file ${cert.pinFile} is empty or unreadable.`
           : `The environment variable ${cert.pinEnv} holding the PIN is not set.`,
         true
+      );
+    }
+
+    return pin;
+  }
+
+  // Not retryable: the terminal is asked only at startup, never mid-request.
+  private typedPin(cert: Pkcs11Cert): string {
+    const pin = this.pins.get(cert);
+
+    if (pin === undefined) {
+      throw new Pkcs11Error(
+        Pkcs11ErrorCode.PIN_UNAVAILABLE,
+        `No PIN for the certificate of ${cert.hostname} was entered when the Repeater started, and it asks only then. Restart it in a terminal, or set "pinFile" or "pinEnv".`
       );
     }
 

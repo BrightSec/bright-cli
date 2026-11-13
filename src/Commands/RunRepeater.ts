@@ -1,8 +1,11 @@
 import {
   Cert,
   Pkcs11CertParser,
+  RequestExecutor,
   RequestExecutorOptions
 } from '../RequestExecutor';
+import { Pkcs11ModuleLocator } from '../RequestExecutor/Pkcs11/Pkcs11ModuleLocator';
+import { Pkcs11PinPromptCancelledError } from '../RequestExecutor/Pkcs11/Pkcs11PinPrompt';
 import { ErrorMessageFactory, Helpers, logger } from '../Utils';
 import container from '../container';
 import { DefaultRepeaterServerOptions, RepeaterLauncher } from '../Repeater';
@@ -66,13 +69,26 @@ export class RunRepeater implements CommandModule {
       return undefined;
     }
 
-    if (!resolvedModule) {
+    if (resolvedModule) {
+      return { module: resolvedModule, provider: resolvedProvider, certs };
+    }
+
+    const discovery = container
+      .resolve<Pkcs11ModuleLocator>(Pkcs11ModuleLocator)
+      .locate(certs);
+
+    if (!discovery) {
       throw new Error(
         'Option --pkcs11-module is required with --pkcs11-cert: set it to the PKCS#11 library of the card vendor.'
       );
     }
 
-    return { module: resolvedModule, provider: resolvedProvider, certs };
+    return {
+      module: discovery.path,
+      provider: resolvedProvider,
+      certs,
+      discovery
+    };
   }
 
   private static assertNoPkcs11Env(): void {
@@ -95,6 +111,15 @@ export class RunRepeater implements CommandModule {
     return RunRepeater.pkcs11ByArgs.has(args)
       ? RunRepeater.pkcs11ByArgs.get(args)
       : RunRepeater.parsePkcs11(args);
+  }
+
+  // One at a time: an executor may be reading from the terminal.
+  private static async prepareExecutors(): Promise<void> {
+    for (const executor of container.resolveAll<RequestExecutor>(
+      RequestExecutor
+    )) {
+      await executor.prepare?.();
+    }
   }
 
   public builder(argv: Argv): Argv {
@@ -205,8 +230,8 @@ export class RunRepeater implements CommandModule {
         requiresArg: true,
         array: true,
         describe:
-          'Client certificate whose private key is on a PKCS#11 token (smart card, USB token, HSM), for HTTPS targets. Requires --pkcs11-module. ' +
-          'Required: "hostname", "pinFile" or "pinEnv". ' +
+          'Client certificate whose private key is on a PKCS#11 token (smart card, USB token, HSM), for HTTPS targets. Uses the library from --pkcs11-module; on Windows, without it, the Repeater looks for the library of common card software. ' +
+          'Required: "hostname". The PIN comes from "pinFile" or "pinEnv"; with neither, the Repeater asks for it in the terminal at startup if the token needs one. ' +
           'Optional: "port", "token" (token label), "label" and "id" (CKA_LABEL and hex CKA_ID of the certificate on the token, chosen at startup when absent), ' +
           '"certFile" (PEM file with the certificate instead of the one on the token; "label" and "id" then select the private key), "maxConcurrency" (default 1). ' +
           'Example: {"hostname": "example.com", "pinFile": "/run/secrets/card.pin", "label": "X.509 Certificate for PIV Authentication"}'
@@ -215,7 +240,9 @@ export class RunRepeater implements CommandModule {
         requiresArg: true,
         string: true,
         describe:
-          'PKCS#11 library of the card vendor, used for all --pkcs11-cert entries. Example: "C:\\Program Files\\Yubico\\Yubico PIV Tool\\bin\\libykcs11.dll"'
+          'PKCS#11 library of the card vendor, used for all --pkcs11-cert entries. ' +
+          'On Windows, when it is not set, the Repeater looks in the default install locations of common card software and logs the library it connects. ' +
+          'Example: "C:\\Program Files\\Yubico\\Yubico PIV Tool\\bin\\libykcs11.dll"'
       })
       .option('pkcs11-provider', {
         requiresArg: true,
@@ -458,7 +485,14 @@ export class RunRepeater implements CommandModule {
     }
 
     if (args.daemon) {
-      await repeaterLauncher.install();
+      // The service starts without a terminal to watch: pin the library the
+      // user saw connected now instead of searching again at every start.
+      const discovery = container.resolve<RequestExecutorOptions>(
+        RequestExecutorOptions
+      ).pkcs11?.discovery;
+      await repeaterLauncher.install(
+        discovery ? ['--pkcs11-module', discovery.path] : []
+      );
       process.exitCode = 0;
 
       return;
@@ -472,9 +506,12 @@ export class RunRepeater implements CommandModule {
         })
       );
 
+      await RunRepeater.prepareExecutors();
       await repeaterLauncher.run(args.id as string, args.run as boolean);
     } catch (error) {
-      captureException(error);
+      if (!(error instanceof Pkcs11PinPromptCancelledError)) {
+        captureException(error);
+      }
       logger.error(
         ErrorMessageFactory.genericCommandError({ error, command: 'repeater' })
       );

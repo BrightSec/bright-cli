@@ -3,14 +3,20 @@
 # End-to-end PKCS#11 check on Windows against the real Bright cloud: the
 # smart-card bundle (bright-cli.exe + pkcs11prov.dll) signs the mTLS handshake
 # with a key on a SoftHSM2 token, and the Bright API sends a request through
-# the Repeater to the public mTLS mock. The bundle under test is the fixed
-# build below, not one built from the PR head.
+# the Repeater to the public mTLS mock. The bundle under test is the one
+# tmp-pkcs11-build-chain.yml builds from the PR head.
+#
+# The discovery cases start the Repeater without --pkcs11-module. HSMs are not
+# discovery candidates, so SoftHSM2 is planted under the name of the SafeNet
+# Authentication Client's library; it depends on system DLLs only.
 name: TMP / PKCS#11 Windows e2e
 
 on:
   pull_request:
     branches:
       - next
+      # TODO: temporary, for the PKCS#11 library discovery PR.
+      - feat/pkcs11-smart-card
 
 # One Repeater ID is shared by every run: never connect it twice at once.
 concurrency:
@@ -23,25 +29,26 @@ permissions:
 
 jobs:
   windows-e2e:
-    if: github.head_ref == 'feat/pkcs11-smart-card'
+    if: github.head_ref == 'feat/pkcs11-smart-card' || github.head_ref == 'feat/pkcs11-module-discovery'
     # The bundle is x64 only.
     runs-on: windows-2022
-    timeout-minutes: 30
+    # Most of it is waiting for the build chain's Windows job (about 30 minutes).
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
     env:
-      BUNDLE_RUN_ID: 42994625052
       BUNDLE_ARTIFACT: bright-cli-win-x64-smartcard
-      BUNDLE_VERSION: 13.17.2-smartcard.21
       BRIGHT_HOSTNAME: app.brightsec.com
-      BRIGHT_PROJECT_ID: k9EfMAjAGNZaokybFPmVct
+      BRIGHT_PROJECT_ID: wKjo6enQEyt5bX4fzgQ4RN
       BRIGHT_API_KEY: ${{ secrets.TMP_PKCS11_E2E_API_KEY }}
       BRIGHT_REPEATER_ID: ${{ secrets.TMP_PKCS11_E2E_REPEATER_ID }}
       SOFTHSM_DIR: ${{ github.workspace }}/.pkcs11-tools/SoftHSM2
       PKCS11_WORK_DIR: ${{ github.workspace }}/.pkcs11-e2e
       REPEATER_BIN: ${{ github.workspace }}/smartcard/bright-cli.exe
       PKCS11_MODULE: ${{ github.workspace }}/.pkcs11-tools/SoftHSM2/lib/softhsm2-x64.dll
+      # TODO: temporary, the discovery cases. Bash paths: the SAC install folder.
+      SAC_DIR: /c/Program Files/SafeNet/Authentication/SAC
     steps:
       - name: Check secrets
         env:
@@ -60,11 +67,45 @@ jobs:
         with:
           node-version: '24'
 
+      # The build chain runs on the push of the same commit (PRs into next)
+      # or on the PR itself (PRs into feat/pkcs11-smart-card). Only its Windows
+      # job matters, so wait for that job's artifact, not for the whole run.
+      - name: Wait for the smart-card bundle of this commit
+        id: bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BUILD_EVENT: ${{ github.base_ref == 'next' && 'push' || 'pull_request' }}
+        run: |
+          deadline=$((SECONDS + 50 * 60))
+          while [ $SECONDS -lt $deadline ]; do
+            run=$(gh run list -R "$GITHUB_REPOSITORY" --workflow tmp-pkcs11-build-chain.yml \
+              --event "$BUILD_EVENT" --commit "$HEAD_SHA" --json databaseId,number,status,conclusion --jq '.[0] // empty')
+            if [ -n "$run" ]; then
+              id=$(jq -r .databaseId <<< "$run")
+              artifact=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts" \
+                --jq ".artifacts[] | select(.name == \"$BUNDLE_ARTIFACT\") | .id")
+              if [ -n "$artifact" ]; then
+                echo "Build chain run $id (#$(jq -r .number <<< "$run")) uploaded $BUNDLE_ARTIFACT"
+                echo "run-id=$id" >> "$GITHUB_OUTPUT"
+                echo "version=-smartcard.$(jq -r .number <<< "$run")" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              if [ "$(jq -r .status <<< "$run")" = completed ]; then
+                echo "::error::build chain run $id ended ($(jq -r .conclusion <<< "$run")) without $BUNDLE_ARTIFACT"
+                exit 1
+              fi
+            fi
+            sleep 30
+          done
+          echo "::error::no $BUNDLE_ARTIFACT for $HEAD_SHA within 50 minutes"
+          exit 1
+
       - name: Download the smart-card bundle
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.BUNDLE_ARTIFACT }}
-          run-id: ${{ env.BUNDLE_RUN_ID }}
+          run-id: ${{ steps.bundle.outputs.run-id }}
           github-token: ${{ github.token }}
           path: smartcard
 
@@ -82,7 +123,7 @@ jobs:
             ' "$f"
           done
           smartcard/bright-cli.exe --version | tee version.txt
-          grep -qF "$BUNDLE_VERSION" version.txt
+          grep -qF -- "${{ steps.bundle.outputs.version }}" version.txt
 
       # Pinned by SHA-256, as in pkcs11.yml.
       - name: Download SoftHSM2 and OpenSC
@@ -95,6 +136,28 @@ jobs:
           88ea45e848063ff5f3594a457b7f023223472eae9c9c543f8035f7689bb7b319  opensc.msi
           EOF
           unzip -q softhsm.zip
+
+      # TODO: temporary, the discovery cases. Planting into a real SAC install
+      # would test that one instead of the planted copy.
+      - name: 'Discovery: the image has no SafeNet Authentication Client'
+        id: discovery-clean
+        run: |
+          if [ -e "/c/Program Files/SafeNet" ]; then
+            echo "::error::C:\\Program Files\\SafeNet exists on the runner image"
+            ls -R "/c/Program Files/SafeNet" | head -50
+            exit 1
+          fi
+
+      # Runs before OpenSC is installed: OpenSC is a discovery candidate too,
+      # and would load.
+      - name: 'Discovery: only a 32-bit library is installed, so the Repeater does not start'
+        if: ${{ !cancelled() && steps.discovery-clean.conclusion == 'success' }}
+        env:
+          PKCS11_PLANTED_MODULE: C:\Program Files\SafeNet\Authentication\SAC\x32\IDPrimePKCS11.dll
+        run: |
+          mkdir -p "$SAC_DIR/x32"
+          cp "$SOFTHSM_DIR/lib/softhsm2.dll" "$SAC_DIR/x32/IDPrimePKCS11.dll"
+          node .github/workflows/scripts/tmp-pkcs11-windows-e2e.mjs discovery-not-found unused.p12
 
       - name: Install OpenSC (pkcs11-tool)
         shell: pwsh
@@ -141,6 +204,32 @@ jobs:
         if: ${{ !cancelled() && steps.positive.conclusion != 'skipped' }}
         run: node .github/workflows/scripts/tmp-pkcs11-windows-e2e.mjs negative "$PKCS11_WORK_DIR/certs/untrusted.p12"
 
+      # TODO: temporary, the discovery cases.
+      - name: 'Discovery: plant SoftHSM2 as the SAC IDPrime library'
+        id: discovery-planted
+        if: ${{ !cancelled() && steps.discovery-clean.conclusion == 'success' && steps.positive.conclusion != 'skipped' }}
+        run: |
+          mkdir -p "$SAC_DIR/x64"
+          cp "$SOFTHSM_DIR/lib/softhsm2-x64.dll" "$SAC_DIR/x64/IDPrimePKCS1164.dll"
+          node -e '
+            const b = require("fs").readFileSync(process.argv[1]);
+            const machine = b.readUInt16LE(b.readUInt32LE(0x3c) + 4);
+            console.log(process.argv[1], "0x" + machine.toString(16));
+            if (machine !== 0x8664) process.exit(1);
+          ' "$SAC_DIR/x64/IDPrimePKCS1164.dll"
+
+      - name: 'Discovery: without --pkcs11-module the trusted certificate gets 200'
+        if: ${{ !cancelled() && steps.discovery-planted.conclusion == 'success' }}
+        env:
+          PKCS11_PLANTED_MODULE: C:\Program Files\SafeNet\Authentication\SAC\x64\IDPrimePKCS1164.dll
+        run: node .github/workflows/scripts/tmp-pkcs11-windows-e2e.mjs discovery-positive "$PKCS11_WORK_DIR/certs/trusted.p12"
+
+      - name: 'Discovery: a missing token says the library was picked automatically'
+        if: ${{ !cancelled() && steps.discovery-planted.conclusion == 'success' }}
+        env:
+          PKCS11_PLANTED_MODULE: C:\Program Files\SafeNet\Authentication\SAC\x64\IDPrimePKCS1164.dll
+        run: node .github/workflows/scripts/tmp-pkcs11-windows-e2e.mjs discovery-hint "$PKCS11_WORK_DIR/certs/trusted.p12"
+
       - name: Remove the token and certificates
         if: always()
-        run: rm -rf "$PKCS11_WORK_DIR"
+        run: rm -rf "$PKCS11_WORK_DIR" "/c/Program Files/SafeNet"

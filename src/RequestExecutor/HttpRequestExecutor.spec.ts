@@ -2187,6 +2187,7 @@ describe('HttpRequestExecutor', () => {
 
     const mockPkcs11Client = () => {
       const client = {
+        start: jest.fn(() => Promise.resolve()),
         warmUp: jest.fn(),
         match: jest.fn(() => [pkcs11Cert]),
         identity: jest.fn(() =>
@@ -2208,7 +2209,7 @@ describe('HttpRequestExecutor', () => {
       return client;
     };
 
-    it('should start the PKCS#11 checks when the executor is created', () => {
+    it('should not touch the token or the terminal when the executor is created', () => {
       // arrange
       const client = mockPkcs11Client();
 
@@ -2216,7 +2217,8 @@ describe('HttpRequestExecutor', () => {
       buildSut({ pkcs11: { module: '/opt/vendor.so', certs: [pkcs11Cert] } });
 
       // assert
-      expect(client.warmUp).toHaveBeenCalledTimes(1);
+      expect(client.start).not.toHaveBeenCalled();
+      expect(client.warmUp).not.toHaveBeenCalled();
     });
 
     it('should return the PKCS#11 error code without sending the request', async () => {
@@ -2444,6 +2446,42 @@ describe('HttpRequestExecutor', () => {
         await new Promise((resolve) => setImmediate(resolve));
         pool.close();
       }
+    });
+  });
+
+  describe('prepare', () => {
+    const cert: Pkcs11Cert = {
+      hostname: 'example.com',
+      cert: 'token',
+      maxConcurrency: 1
+    };
+
+    it('should ask for the PINs and start the PKCS#11 checks', async () => {
+      // arrange
+      const start = jest.fn(() => Promise.resolve());
+      jest
+        .mocked(Pkcs11Client)
+        .mockImplementation(() => ({ start } as unknown as Pkcs11Client));
+      const sut = buildSut({
+        pkcs11: { module: '/opt/vendor.so', certs: [cert] }
+      });
+
+      // act
+      await sut.prepare();
+
+      // assert
+      expect(start).toHaveBeenCalledTimes(1);
+    });
+
+    it('should resolve without PKCS#11 certificates', async () => {
+      // arrange
+      const sut = buildSut();
+
+      // act
+      const result = sut.prepare();
+
+      // assert
+      await expect(result).resolves.toBeUndefined();
     });
   });
 });

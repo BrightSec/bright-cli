@@ -143,14 +143,9 @@ describe('Pkcs11CertParser', () => {
         /"hostname" must be a non-empty string/
       ],
       [
-        'no PIN source',
-        { hostname: 'example.com' },
-        /exactly one of "pinFile" or "pinEnv"/
-      ],
-      [
         'two PIN sources',
         { hostname: 'example.com', pinFile, pinEnv: 'CARD_PIN' },
-        /exactly one of "pinFile" or "pinEnv"/
+        /specify only one of "pinFile" or "pinEnv"/
       ],
       [
         'a literal PIN',
@@ -249,6 +244,31 @@ describe('Pkcs11CertParser', () => {
       expect(act).not.toThrow(/483920/);
     });
 
+    it('should accept an entry without a PIN source, whose PIN is asked for at startup', () => {
+      // act
+      const [result]: Pkcs11Cert[] = Pkcs11CertParser.parse(
+        [{ hostname: 'example.com' }],
+        {
+          env: {}
+        }
+      );
+
+      // assert
+      expect(result).not.toHaveProperty('pinFile');
+      expect(result).not.toHaveProperty('pinEnv');
+    });
+
+    it('should reject an entry without a PIN source for a daemon, which has no terminal', () => {
+      // act
+      const act = () =>
+        Pkcs11CertParser.parse([{ hostname: 'example.com' }], {
+          daemon: true
+        });
+
+      // assert
+      expect(act).toThrow(/daemon service has no terminal.*"pinFile"/);
+    });
+
     it('should reject "pinEnv" for a daemon, whose service does not inherit the environment', () => {
       // act
       const act = () =>
@@ -311,7 +331,7 @@ describe('Pkcs11CertParser', () => {
       // arrange
       const entries = [
         { hostname: 'a.example.com', pinFile },
-        { hostname: 'b.example.com' }
+        { hostname: 'b.example.com', pinFile, port: 0 }
       ];
 
       // act

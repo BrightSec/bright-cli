@@ -1,10 +1,14 @@
 import { CurlHandlePool } from './CurlHandlePool';
 import { Pkcs11Error, Pkcs11ErrorCode } from './Pkcs11Error';
 import { Pkcs11ModuleLoader } from './Pkcs11Module';
+import { Pkcs11ModuleReport } from './Pkcs11ModuleReport';
 import { Pkcs11jsModuleLoader } from './Pkcs11jsModuleLoader';
 import { Pkcs11OpenSslConfig } from './Pkcs11OpenSslConfig';
+import { Pkcs11PinPrompt } from './Pkcs11PinPrompt';
+import { Pkcs11PinStore } from './Pkcs11PinStore';
 import { Pkcs11Identity, Pkcs11Preflight } from './Pkcs11Preflight';
 import { Pkcs11ProviderLocator } from './Pkcs11ProviderLocator';
+import { TerminalPinPrompt } from './TerminalPinPrompt';
 import { Pkcs11Cert, Pkcs11Options } from '../Pkcs11Cert';
 import { Helpers, logger } from '../../Utils';
 import { delimiter, dirname } from 'node:path';
@@ -15,6 +19,7 @@ export interface Pkcs11ClientDependencies {
   writeConfig?: typeof Pkcs11OpenSslConfig.write;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
+  prompt?: Pkcs11PinPrompt;
 }
 
 /**
@@ -24,8 +29,11 @@ export interface Pkcs11ClientDependencies {
  */
 export class Pkcs11Client {
   private readonly pools = new Map<Pkcs11Cert, CurlHandlePool>();
+  private readonly pins = new Pkcs11PinStore();
+  private readonly prompt: Pkcs11PinPrompt;
   private readonly preflight?: Pkcs11Preflight;
   private readonly setupError?: Pkcs11Error;
+  private started?: Promise<void>;
 
   constructor(
     private readonly options: Pkcs11Options,
@@ -35,9 +43,12 @@ export class Pkcs11Client {
         Pkcs11ProviderLocator.locate(explicit),
       writeConfig = Pkcs11OpenSslConfig.write,
       env = process.env,
-      platform = process.platform
+      platform = process.platform,
+      prompt = new TerminalPinPrompt()
     }: Pkcs11ClientDependencies = {}
   ) {
+    this.prompt = prompt;
+
     try {
       const provider = locateProvider(options.provider);
       const config = writeConfig(provider, options.module);
@@ -54,9 +65,12 @@ export class Pkcs11Client {
       env.OPENSSL_CONF = config.path;
 
       if (platform === 'win32') {
-        // Windows resolves the provider's own DLL dependencies
-        // (libcrypto-3-x64.dll) through PATH, not its directory.
-        env.PATH = `${dirname(provider)}${delimiter}${env.PATH ?? ''}`;
+        // Windows resolves a DLL's own dependencies through PATH, not its
+        // directory: the provider needs libcrypto-3-x64.dll, and vendor
+        // libraries such as YKCS11 need DLLs from their own folder.
+        env.PATH = [dirname(provider), dirname(options.module), env.PATH ?? '']
+          .filter(Boolean)
+          .join(delimiter);
         // OpenSSL reads OPENSSL_CONF through the CRT's getenv(), which only sees
         // the environment as it was at process start. With this flag set it
         // reads through GetEnvironmentVariableW, which sees the value above.
@@ -67,7 +81,13 @@ export class Pkcs11Client {
       this.preflight = new Pkcs11Preflight(
         loader,
         { module: options.module, provider: config.name },
-        { env }
+        {
+          env,
+          pins: this.pins,
+          moduleHint: options.discovery
+            ? Pkcs11ModuleReport.runtimeHint(options.discovery)
+            : undefined
+        }
       );
     } catch (e) {
       this.setupError =
@@ -76,6 +96,18 @@ export class Pkcs11Client {
           : new Pkcs11Error(Pkcs11ErrorCode.MODULE_LOAD_FAILED, e.message);
       logger.error('PKCS#11: %s', this.setupError.message);
     }
+  }
+
+  /**
+   * Asks for the missing PINs, then starts the checks so that a broken setup
+   * is reported at startup. Runs once; the terminal is never asked afterwards.
+   *
+   * @throws Pkcs11PinPromptCancelledError
+   */
+  public start(): Promise<void> {
+    this.started ??= this.askForPins().then(() => this.warmUp());
+
+    return this.started;
   }
 
   /** Starts the checks so that a broken setup is reported at startup. */
@@ -119,5 +151,60 @@ export class Pkcs11Client {
     }
 
     return pool;
+  }
+
+  private async askForPins(): Promise<void> {
+    // Without a terminal the checks report the missing PINs.
+    if (this.setupError || !this.prompt.interactive) {
+      return;
+    }
+
+    const certs = this.options.certs.filter(
+      (cert: Pkcs11Cert) => !cert.pinFile && !cert.pinEnv && this.needsPin(cert)
+    );
+
+    for (const cert of certs) {
+      await this.askForPin(cert);
+    }
+  }
+
+  private async askForPin(cert: Pkcs11Cert): Promise<void> {
+    const pin = await this.prompt.ask(
+      `Enter the PKCS#11 PIN for ${this.describe(cert)}: `
+    );
+
+    if (pin) {
+      this.pins.set(cert, pin);
+    } else {
+      logger.warn(
+        'PKCS#11: no PIN entered for %s; its requests will fail until the Repeater restarts.',
+        cert.hostname
+      );
+    }
+  }
+
+  private needsPin(cert: Pkcs11Cert): boolean {
+    try {
+      return this.preflight.requiresPin(cert);
+    } catch (e) {
+      // A card that is missing now may be inserted later, but the PIN can be
+      // asked for only now. A module that does not load fails every request anyway.
+      return !(
+        e instanceof Pkcs11Error &&
+        e.code === Pkcs11ErrorCode.MODULE_LOAD_FAILED
+      );
+    }
+  }
+
+  private describe({ hostname, port, token, label, id }: Pkcs11Cert): string {
+    const details = [
+      token !== undefined ? `token "${token}"` : '',
+      label !== undefined ? `label "${label}"` : '',
+      id !== undefined ? `id ${id}` : ''
+    ].filter(Boolean);
+
+    return `${hostname}${port ? `:${port}` : ''}${
+      details.length ? ` (${details.join(', ')})` : ''
+    }`;
   }
 }

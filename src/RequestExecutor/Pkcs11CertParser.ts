@@ -243,8 +243,18 @@ export class Pkcs11CertParser {
     const pinFile = Pkcs11CertParser.optionalString(raw, 'pinFile');
     const pinEnv = Pkcs11CertParser.optionalString(raw, 'pinEnv');
 
-    if (!pinFile === !pinEnv) {
-      throw new Error('specify exactly one of "pinFile" or "pinEnv".');
+    if (pinFile && pinEnv) {
+      throw new Error('specify only one of "pinFile" or "pinEnv".');
+    }
+
+    if (!pinFile && !pinEnv) {
+      if (daemon) {
+        throw new Error(
+          'the daemon service has no terminal to ask for the PIN in. Set "pinFile".'
+        );
+      }
+
+      return {};
     }
 
     return pinEnv

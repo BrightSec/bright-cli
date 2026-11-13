@@ -1,0 +1,503 @@
+# TODO: temporary. Remove before merging feat/pkcs11-smart-card into next.
+#
+# Dry run of the artifact chain that deploy.yml runs after semantic-release cuts
+# a release on next: npm package, pkg executables + MSI, Docker image and Helm
+# chart. Nothing is published or attached to a release; every artifact is
+# smoke-tested and kept as a workflow artifact instead. The Windows executable,
+# roots.exe and the MSI are code signed as in deploy.yml.
+name: TMP / PKCS#11 build chain
+
+on:
+  push:
+    branches:
+      - feat/pkcs11-smart-card
+  pull_request:
+    branches:
+      - feat/pkcs11-smart-card
+  workflow_dispatch:
+
+concurrency:
+  group: '${{ github.workflow }}-${{ github.ref }}'
+  cancel-in-progress: true
+
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        uses: ./.github/workflows/composite/npm
+
+      # A unique prerelease version keeps these artifacts apart from real releases.
+      # build-msi.ps1 turns X.Y.Z-<tag>.N into the MSI version X.Y.Z.N, so the
+      # tag must contain no digits and be followed by one number.
+      - name: Set build version
+        id: version
+        run: |
+          BASE="$(node -p "require('./package.json').version.split('-')[0]")"
+          VERSION="$BASE-smartcard.${{ github.run_number }}"
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set default distribution
+        run: npm pkg set brightCli.distribution=package
+
+      - name: Build package
+        run: npm run build
+
+      - name: Pack artifacts
+        run: |
+          npm pack
+          mv brightsec-cli-*.tgz brightsec-cli.tgz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build
+          path: |
+            dist
+            Dockerfile
+            package.json
+            package-lock.json
+            README.md
+            LICENSE
+            tools
+            helm
+            brightsec-cli.tgz
+
+  generate-binary:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: win
+          # deploy.yml still uses macos-14, which GitHub no longer provides.
+          - os: macos-15
+            target: macos
+          - os: ubuntu-22.04
+            target: linux
+            container:
+              image: redhat/ubi8
+              options: '--user root'
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+
+      - name: Install dev-deps
+        if: startsWith(matrix.os, 'ubuntu')
+        # pkcs11js compiles at install time: node-gyp needs Python 3.8+ and
+        # Node 24's headers need C++20, newer than ubi8's python3 (3.6) and gcc (8).
+        run: |
+          dnf install -y dnf-utils \
+          && dnf install -y python3.11 gcc-toolset-12-gcc-c++ make \
+          && rm -rf /var/cache/dnf \
+          && echo /opt/rh/gcc-toolset-12/root/usr/bin >> "$GITHUB_PATH" \
+          && echo "npm_config_python=python3.11" >> "$GITHUB_ENV"
+
+      - name: Install deps
+        uses: ./.github/workflows/composite/npm
+
+      - name: Set distribution
+        run: npx json -I -f package.json -e "this.brightCli.distribution='${{ matrix.target }}-executable'"
+
+      # The macOS runners are arm64, while the executable is x64: the addon
+      # npm built for the runner could not be loaded by it.
+      - name: Build the pkcs11js addon for x64
+        if: startsWith(matrix.os, 'macos')
+        working-directory: node_modules/pkcs11js
+        run: npx --yes node-gyp@11 rebuild --arch=x64
+
+      # pkcs11js is an optional dependency: a failed native build would only
+      # surface at runtime, as PKCS#11 missing from the executable.
+      - name: Check the pkcs11js addon
+        shell: bash
+        # The executables are x64: read the CPU type from the ELF, Mach-O or PE header.
+        run: |
+          node -e '
+            const b = require("fs").readFileSync("node_modules/pkcs11js/build/Release/pkcs11.node");
+            const arch =
+              b.readUInt32BE(0) === 0x7f454c46 ? (b.readUInt16LE(0x12) === 0x3e ? "x64" : "other")
+              : b.readUInt32LE(0) === 0xfeedfacf ? (b.readUInt32LE(4) === 0x01000007 ? "x64" : "other")
+              : b.readUInt16LE(b.readUInt32LE(0x3c) + 4) === 0x8664 ? "x64" : "other";
+            console.log("pkcs11.node:", arch);
+            if (arch !== "x64") process.exit(1);
+          '
+
+      - name: Build executable file
+        run: npm run build:pkg -- -t node24-${{ matrix.target }}-x64
+
+      - name: Set Windows version info
+        if: startsWith(matrix.os, 'win')
+        run: node .\tools\scripts\set-windows-version-info.mjs .\bin\cli.exe
+
+      # DigiCert KeyLocker code signing, the same steps as in deploy.yml.
+      - name: Prepare Windows code signing
+        id: signing
+        if: startsWith(matrix.os, 'win')
+        shell: bash
+        env:
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
+        run: |
+          if [ -z "$SM_API_KEY" ]; then
+            echo "DigiCert KeyLocker secrets are not configured; Windows artifacts will not be signed."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$SM_CLIENT_CERT_FILE_B64" | base64 --decode > "${RUNNER_TEMP}/client-auth-cert.p12"
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install DigiCert KeyLocker client tools
+        if: startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        uses: digicert/code-signing-software-trust-action@v1
+        env:
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}/client-auth-cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+
+      - name: Sync code signing certificate to the Windows store
+        if: startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        env:
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}/client-auth-cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+        run: smctl windows certsync
+        shell: pwsh
+
+      - name: Sign Windows executable
+        if: startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        env:
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}/client-auth-cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CODE_SIGNING_CERT_SHA1_HASH: ${{ secrets.SM_CODE_SIGNING_CERT_SHA1_HASH }}
+        run: .\tools\scripts\sign-windows.ps1 -FilePath .\bin\cli.exe
+        shell: pwsh
+
+      # roots.exe (from the win-ca package) is bundled into the MSI, so it is
+      # staged and signed here before build-msi.ps1 packages it.
+      - name: Sign bundled roots.exe
+        if: startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        env:
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}/client-auth-cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CODE_SIGNING_CERT_SHA1_HASH: ${{ secrets.SM_CODE_SIGNING_CERT_SHA1_HASH }}
+        run: |
+          Copy-Item .\node_modules\win-ca\lib\roots.exe -Destination .\bin\roots.exe
+          .\tools\scripts\sign-windows.ps1 -FilePath .\bin\roots.exe
+        shell: pwsh
+
+      - name: Build MSI
+        if: startsWith(matrix.os, 'win')
+        run: .\tools\scripts\build-msi.ps1
+        shell: pwsh
+
+      - name: Sign Windows installer (MSI)
+        if: startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        env:
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}/client-auth-cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CODE_SIGNING_CERT_SHA1_HASH: ${{ secrets.SM_CODE_SIGNING_CERT_SHA1_HASH }}
+        run: .\tools\scripts\sign-windows.ps1 -FilePath .\bin\bright-cli.msi
+        shell: pwsh
+
+      - name: Remove decoded client-auth certificate
+        if: always() && startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        run: Remove-Item -Path "${{ runner.temp }}/client-auth-cert.p12" -Force -ErrorAction SilentlyContinue
+        shell: pwsh
+
+      - name: Smoke-test executable
+        shell: bash
+        run: |
+          BIN=./bin/cli
+          [ -f ./bin/cli.exe ] && BIN=./bin/cli.exe
+          "$BIN" --version | tee version.txt
+          grep -q "${{ needs.build.outputs.version }}" version.txt
+          "$BIN" repeater --help > /dev/null
+
+      # Pinned by SHA-256: libp11's provider ships next to the executable, and
+      # SoftHSM2 / OpenSC are loaded by the smoke test.
+      - name: Download libp11, SoftHSM2 and OpenSC
+        if: startsWith(matrix.os, 'win')
+        shell: bash
+        run: |
+          mkdir -p .pkcs11-tools && cd .pkcs11-tools
+          curl -fsSLo softhsm.zip https://github.com/disig/SoftHSM2-for-Windows/releases/download/v2.5.0/SoftHSM2-2.5.0-portable.zip
+          curl -fsSLo libp11.zip https://github.com/OpenSC/libp11/releases/download/libp11-0.4.21/libp11-0.4.21-x64.zip
+          curl -fsSLo opensc.msi https://github.com/OpenSC/OpenSC/releases/download/0.27.1/OpenSC-0.27.1_x64.msi
+          sha256sum -c - <<'EOF'
+          85273bcc1a6b90e877f7bb4f7e90221d57103d8f5241d154a79dd730a135b910  softhsm.zip
+          443f6ddbf15b437df0e37190c8673e76fa5f7268d22d99052d1e9b2fe1af46fd  libp11.zip
+          88ea45e848063ff5f3594a457b7f023223472eae9c9c543f8035f7689bb7b319  opensc.msi
+          EOF
+          unzip -q softhsm.zip
+          unzip -q libp11.zip -d libp11
+          curl -fsSLo libp11/COPYING https://raw.githubusercontent.com/OpenSC/libp11/libp11-0.4.21/COPYING
+          curl -fsSLo LICENSE-Apache-2.0.txt https://www.apache.org/licenses/LICENSE-2.0.txt
+          sha256sum -c - <<'EOF'
+          d80c9d084ebfb50ea1ed91bfbc2410d6ce542097a32c43b00781b83adcb8c77f  libp11/COPYING
+          cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  LICENSE-Apache-2.0.txt
+          EOF
+
+      # The Repeater looks for pkcs11prov.dll next to its executable; the
+      # provider imports libcrypto-3-x64.dll, which imports VCRUNTIME140.dll.
+      # Windows finds both next to the executable, so the VC++ redistributable
+      # does not have to be installed.
+      - name: Assemble the smart-card bundle
+        if: startsWith(matrix.os, 'win')
+        shell: bash
+        run: |
+          for dir in "/c/Program Files/OpenSSL/bin" "/c/Program Files/OpenSSL-Win64/bin"; do
+            [ -e "$dir/libcrypto-3-x64.dll" ] && OPENSSL_DIR="$dir" && break
+          done
+          [ -n "${OPENSSL_DIR:-}" ] || { echo "libcrypto-3-x64.dll not found" >&2; exit 1; }
+          OPENSSL_VERSION="$(strings "$OPENSSL_DIR/libcrypto-3-x64.dll" | grep -m1 -E '^OpenSSL 3\.[0-9]+\.[0-9]+')"
+          mkdir -p smartcard
+          cp bin/cli.exe smartcard/bright-cli.exe
+          cp .pkcs11-tools/libp11/pkcs11prov.dll "$OPENSSL_DIR/libcrypto-3-x64.dll" /c/Windows/System32/vcruntime140.dll smartcard/
+          cp .pkcs11-tools/libp11/COPYING smartcard/LICENSE-libp11.txt
+          cp .pkcs11-tools/LICENSE-Apache-2.0.txt smartcard/LICENSE-OpenSSL.txt
+          cat > smartcard/THIRD-PARTY-NOTICES.txt <<EOF
+          pkcs11prov.dll: OpenSSL PKCS#11 provider from libp11 0.4.21
+            https://github.com/OpenSC/libp11/releases/tag/libp11-0.4.21
+            LGPL-2.1-or-later, see LICENSE-libp11.txt. Source: https://github.com/OpenSC/libp11/tree/libp11-0.4.21
+
+          libcrypto-3-x64.dll: ${OPENSSL_VERSION}
+            https://www.openssl.org/
+            Apache License 2.0, see LICENSE-OpenSSL.txt.
+
+          vcruntime140.dll: Microsoft Visual C++ runtime, needed by libcrypto-3-x64.dll
+            Redistributed under the Microsoft Visual C++ Redistributable licence terms.
+          EOF
+          ls -l smartcard
+
+      # Every DLL the bundle loads must be in the bundle or part of Windows.
+      - name: Check the bundle's DLL dependencies
+        if: startsWith(matrix.os, 'win')
+        shell: bash
+        run: |
+          OBJDUMP="/c/Program Files/LLVM/bin/llvm-objdump.exe"
+          [ -x "$OBJDUMP" ] || OBJDUMP=$(command -v llvm-objdump || command -v objdump)
+          missing=0
+          for dll in smartcard/*.dll; do
+            for dep in $("$OBJDUMP" -p "$dll" | sed -n 's/^ *DLL Name: //p'); do
+              lower=$(echo "$dep" | tr 'A-Z' 'a-z')
+              case "$lower" in
+                kernel32.dll | advapi32.dll | user32.dll | crypt32.dll | ws2_32.dll | api-ms-win-*) ;;
+                *) [ -e "smartcard/$lower" ] || [ -e "smartcard/$dep" ] || { echo "$dll needs $dep, which is not in the bundle"; missing=1; } ;;
+              esac
+            done
+          done
+          exit $missing
+
+      - name: Install OpenSC (pkcs11-tool)
+        if: startsWith(matrix.os, 'win')
+        shell: pwsh
+        run: |
+          $p = Start-Process msiexec.exe -ArgumentList '/i', "$PWD\.pkcs11-tools\opensc.msi", '/qn', '/norestart' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "OpenSC install failed: $($p.ExitCode)" }
+          'C:\Program Files\OpenSC Project\OpenSC\tools' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # A fake Bright cloud sends the Repeater one request to an mTLS target
+      # that requires the client certificate on the SoftHSM2 token.
+      - name: Smoke-test the smart-card bundle
+        if: startsWith(matrix.os, 'win')
+        shell: bash
+        env:
+          PKCS11_TEST_SOFTHSM_DIR: ${{ github.workspace }}/.pkcs11-tools/SoftHSM2
+          PKCS11_TEST_PROVIDER_DIR: ${{ github.workspace }}/smartcard
+          PKCS11_TEST_OPENSSL_DIR: ${{ github.workspace }}/smartcard
+        run: |
+          tests/pkcs11/setup.sh
+          . tests/pkcs11/.work/pkcs11.env
+          # The executable must find the provider by itself, next to it.
+          unset OPENSSL_MODULES OPENSSL_CONF PKCS11_MODULE_PATH PKCS11_PROVIDER_MODULE
+          WORK="$(cygpath -m "$PWD/tests/pkcs11/.work")"
+          echo 1234 > tests/pkcs11/.work/pin.txt
+          echo 0000 > tests/pkcs11/.work/bad-pin.txt
+          npx ts-node tests/pkcs11/target.ts > target.log 2>&1 &
+          TARGET=$!
+          trap 'kill $TARGET 2>/dev/null' EXIT
+          for _ in $(seq 60); do grep -q 'listening' target.log && break; sleep 1; done
+          grep -q 'listening' target.log || { cat target.log; exit 1; }
+          NODE="$(command -v node)"
+          # Only Node and Windows: an OpenSSL elsewhere on
+          # PATH (Git, the runner image) must not hide a DLL missing from the bundle.
+          CLEAN_PATH="$(dirname "$NODE"):/c/Windows/System32:/c/Windows"
+          for expected in 200:pin.txt PKCS11_PIN_INCORRECT:bad-pin.txt; do
+            CERT="{\"hostname\":\"localhost\",\"port\":8443,\"token\":\"$PKCS11_TEST_TOKEN\",\"pinFile\":\"$WORK/${expected#*:}\"}"
+            PATH="$CLEAN_PATH" "$NODE" -r ts-node/register/transpile-only tests/pkcs11/repeater-smoke.ts \
+              https://localhost:8443/ "${expected%%:*}" -- \
+              "$(cygpath -m "$PWD/smartcard/bright-cli.exe")" repeater --hostname localhost \
+              --token smoke.token --id 8PY6wKetVqmfMC9K9g4A7Y \
+              --pkcs11-module "$PKCS11_TEST_MODULE" --pkcs11-cert "$CERT"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: startsWith(matrix.os, 'win')
+        with:
+          name: bright-cli-win-x64-smartcard
+          path: |
+            smartcard/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ format('bright-cli-{0}-x64', matrix.target) }}
+          path: |
+            bin/cli
+            bin/cli.exe
+            bin/bright-cli.msi
+          if-no-files-found: error
+
+  npm-install:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install package globally
+        run: npm i -g ./brightsec-cli.tgz
+
+      - name: Smoke-test installed CLI
+        shell: bash
+        run: |
+          bright-cli --version | tee version.txt
+          grep -q "${{ needs.build.outputs.version }}" version.txt
+          bright-cli repeater --help > /dev/null
+
+  docker:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ts-node and socket.io for the smoke test's target and fake cloud.
+      # Before the download, which replaces package.json with the bumped version.
+      - name: Install deps
+        uses: ./.github/workflows/composite/npm
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+      # The release Dockerfile installs the CLI from the npm registry, which only
+      # has published versions; install the packed tarball instead.
+      - name: Point Dockerfile at the packed tarball
+        run: |
+          sed -e 's#npm i -g -q @brightsec/cli@${VERSION}#npm i -g -q /tmp/brightsec-cli.tgz#' \
+              -e '/^# install @brightsec\/cli from NPM/i COPY brightsec-cli.tgz /tmp/brightsec-cli.tgz' \
+              Dockerfile > Dockerfile.ci
+          grep -q 'npm i -g -q /tmp/brightsec-cli.tgz' Dockerfile.ci
+          grep -q '^COPY brightsec-cli.tgz' Dockerfile.ci
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build multi-platform image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.ci
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=${{ needs.build.outputs.version }}
+          tags: brightsec/cli:pkcs11-ci
+
+      - name: Load amd64 image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.ci
+          platforms: linux/amd64
+          load: true
+          build-args: |
+            VERSION=${{ needs.build.outputs.version }}
+          tags: brightsec/cli:pkcs11-ci
+
+      - name: Smoke-test image
+        run: |
+          docker run --rm brightsec/cli:pkcs11-ci --version | tee version.txt
+          grep -q "${{ needs.build.outputs.version }}" version.txt
+          docker run --rm brightsec/cli:pkcs11-ci repeater --help > /dev/null
+
+      # A fake Bright cloud sends the Repeater in the image one request to an
+      # mTLS target that requires the client certificate on a SoftHSM2 token.
+      # The "default" builder is the one that sees the image loaded above.
+      - name: Smoke-test PKCS#11 in the image
+        run: |
+          docker buildx build --builder default --load -t bright-cli-pkcs11-smoke - <<'EOF'
+          FROM brightsec/cli:pkcs11-ci
+          USER root
+          RUN apk add --no-cache softhsm openssl bash
+          USER 1000
+          EOF
+          cat > pkcs11-smoke.sh <<'EOF'
+          set -euo pipefail
+          export PKCS11_TEST_WORK_DIR=/tmp/pkcs11
+          tests/pkcs11/setup.sh
+          . /tmp/pkcs11/pkcs11.env
+          # The Repeater must find the image's provider by itself.
+          unset OPENSSL_MODULES OPENSSL_CONF PKCS11_MODULE_PATH PKCS11_PROVIDER_MODULE
+          echo 1234 > /tmp/pkcs11/pin.txt
+          echo 0000 > /tmp/pkcs11/bad-pin.txt
+          node -r ts-node/register/transpile-only tests/pkcs11/target.ts > /tmp/target.log 2>&1 &
+          for _ in $(seq 60); do grep -q listening /tmp/target.log && break; sleep 1; done
+          grep -q listening /tmp/target.log || { cat /tmp/target.log; exit 1; }
+          for expected in 200:pin.txt PKCS11_PIN_INCORRECT:bad-pin.txt; do
+            CERT="{\"hostname\":\"localhost\",\"port\":8443,\"token\":\"$PKCS11_TEST_TOKEN\",\"pinFile\":\"/tmp/pkcs11/${expected#*:}\"}"
+            node -r ts-node/register/transpile-only tests/pkcs11/repeater-smoke.ts \
+              https://localhost:8443/ "${expected%%:*}" -- \
+              bright-cli repeater --hostname localhost \
+              --token smoke.token --id 8PY6wKetVqmfMC9K9g4A7Y \
+              --pkcs11-module "$PKCS11_TEST_MODULE" --pkcs11-cert "$CERT"
+          done
+          EOF
+          docker run --rm -v "$PWD":/src:ro -w /src --entrypoint bash bright-cli-pkcs11-smoke pkcs11-smoke.sh
+
+  helm:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+
+      - uses: azure/setup-helm@v4
+
+      - name: Lint and package chart
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          helm lint helm/bright-cli
+          helm package helm/bright-cli --version "$VERSION" --app-version "v$VERSION" --destination .

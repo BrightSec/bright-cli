@@ -1,4 +1,11 @@
-import { Cert, RequestExecutorOptions } from '../RequestExecutor';
+import {
+  Cert,
+  Pkcs11CertParser,
+  RequestExecutor,
+  RequestExecutorOptions
+} from '../RequestExecutor';
+import { Pkcs11ModuleLocator } from '../RequestExecutor/Pkcs11/Pkcs11ModuleLocator';
+import { Pkcs11PinPromptCancelledError } from '../RequestExecutor/Pkcs11/Pkcs11PinPrompt';
 import { ErrorMessageFactory, Helpers, logger } from '../Utils';
 import container from '../container';
 import { DefaultRepeaterServerOptions, RepeaterLauncher } from '../Repeater';
@@ -8,8 +15,112 @@ import { normalize } from 'node:path';
 import process from 'node:process';
 
 export class RunRepeater implements CommandModule {
+  // Validation and registration see the same args object; parsing once keeps
+  // the file and env checks from running twice.
+  private static readonly pkcs11ByArgs = new WeakMap<
+    Arguments,
+    RequestExecutorOptions['pkcs11']
+  >();
+
+  // The daemon service is installed with argv only, so values from these are lost.
+  private static readonly PKCS11_ENV_OPTIONS: Readonly<Record<string, string>> =
+    {
+      REPEATER_PKCS11_CERT: '--pkcs11-cert',
+      REPEATER_PKCS11_MODULE: '--pkcs11-module',
+      REPEATER_PKCS11_PROVIDER: '--pkcs11-provider'
+    };
+
   public readonly command = 'repeater [options]';
   public readonly describe = 'Starts an on-prem agent.';
+
+  private static checkPkcs11(args: Arguments): void {
+    // Removing the daemon must work even if the card setup has since changed.
+    if (args.remove) {
+      return;
+    }
+
+    RunRepeater.pkcs11ByArgs.set(args, RunRepeater.parsePkcs11(args));
+  }
+
+  private static parsePkcs11(
+    args: Arguments
+  ): RequestExecutorOptions['pkcs11'] {
+    const daemon = !!args.daemon;
+    const provider = args.pkcs11Provider as string | undefined;
+    const module = args.pkcs11Module as string | undefined;
+
+    if (daemon) {
+      RunRepeater.assertNoPkcs11Env();
+    }
+
+    const certs = Pkcs11CertParser.parse(args.pkcs11Cert, { daemon });
+    const resolvedModule =
+      module &&
+      Pkcs11CertParser.resolveFile(module, 'Option --pkcs11-module', daemon);
+    const resolvedProvider =
+      provider &&
+      Pkcs11CertParser.resolveFile(
+        provider,
+        'Option --pkcs11-provider',
+        daemon
+      );
+
+    if (!certs.length) {
+      return undefined;
+    }
+
+    if (resolvedModule) {
+      return { module: resolvedModule, provider: resolvedProvider, certs };
+    }
+
+    const discovery = container
+      .resolve<Pkcs11ModuleLocator>(Pkcs11ModuleLocator)
+      .locate(certs);
+
+    if (!discovery) {
+      throw new Error(
+        'Option --pkcs11-module is required with --pkcs11-cert: set it to the PKCS#11 library of the card vendor.'
+      );
+    }
+
+    return {
+      module: discovery.path,
+      provider: resolvedProvider,
+      certs,
+      discovery
+    };
+  }
+
+  private static assertNoPkcs11Env(): void {
+    for (const [name, flag] of Object.entries(RunRepeater.PKCS11_ENV_OPTIONS)) {
+      if (process.env[name]) {
+        throw new Error(
+          `${name} is not available to the daemon service, which does not inherit this shell's environment. Pass ${flag} instead.`
+        );
+      }
+    }
+  }
+
+  private static pkcs11Options(
+    args: Arguments
+  ): RequestExecutorOptions['pkcs11'] {
+    if (args.remove) {
+      return undefined;
+    }
+
+    return RunRepeater.pkcs11ByArgs.has(args)
+      ? RunRepeater.pkcs11ByArgs.get(args)
+      : RunRepeater.parsePkcs11(args);
+  }
+
+  // One at a time: an executor may be reading from the terminal.
+  private static async prepareExecutors(): Promise<void> {
+    for (const executor of container.resolveAll<RequestExecutor>(
+      RequestExecutor
+    )) {
+      await executor.prepare?.();
+    }
+  }
 
   public builder(argv: Argv): Argv {
     return argv
@@ -85,9 +196,12 @@ export class RunRepeater implements CommandModule {
         string: true,
         describe:
           'The certificate must be in PKCS, or PEM format. Example: {"hostname": "example.com", "path": "./example.pem", "passphrase": "pa$$word", "port": "1234"}.',
-        coerce(args: string[]): Cert[] {
-          return args
-            .map((arg: string) => JSON.parse(arg))
+        coerce(args: (string | Cert)[] | Cert): Cert[] {
+          // The config file supplies objects (or a single object), the CLI and env JSON strings.
+          return (Array.isArray(args) ? args : [args])
+            .map((arg: string | Cert) =>
+              typeof arg === 'string' ? JSON.parse(arg) : arg
+            )
             .map(({ path, hostname, passphrase, port }: Cert) => {
               if (!path) {
                 logger.error(
@@ -111,6 +225,30 @@ export class RunRepeater implements CommandModule {
               };
             });
         }
+      })
+      .option('pkcs11-cert', {
+        requiresArg: true,
+        array: true,
+        describe:
+          'Client certificate whose private key is on a PKCS#11 token (smart card, USB token, HSM), for HTTPS targets. Uses the library from --pkcs11-module; on Windows, without it, the Repeater looks for the library of common card software. ' +
+          'Required: "hostname". The PIN comes from "pinFile" or "pinEnv"; with neither, the Repeater asks for it in the terminal at startup if the token needs one. ' +
+          'Optional: "port", "token" (token label), "label" and "id" (CKA_LABEL and hex CKA_ID of the certificate on the token, chosen at startup when absent), ' +
+          '"cert" ("token" or a PEM file path; with a file, "label" and "id" select the private key), "maxConcurrency" (default 1). ' +
+          'Example: {"hostname": "example.com", "pinFile": "/run/secrets/card.pin", "label": "X.509 Certificate for PIV Authentication"}'
+      })
+      .option('pkcs11-module', {
+        requiresArg: true,
+        string: true,
+        describe:
+          'PKCS#11 library of the card vendor, used for all --pkcs11-cert entries. ' +
+          'On Windows, when it is not set, the Repeater looks in the default install locations of common card software and logs the library it connects. ' +
+          'Example: "C:\\Program Files\\Yubico\\Yubico PIV Tool\\bin\\libykcs11.dll"'
+      })
+      .option('pkcs11-provider', {
+        requiresArg: true,
+        string: true,
+        describe:
+          'Path to the OpenSSL PKCS#11 provider plugin, if not in the default location.'
       })
       .option('experimental-connection-reuse', {
         deprecated: 'Use --ntlm instead',
@@ -259,6 +397,8 @@ export class RunRepeater implements CommandModule {
           }
         }
 
+        RunRepeater.checkPkcs11(args);
+
         return true;
       })
       .middleware((args: Arguments) => {
@@ -269,6 +409,7 @@ export class RunRepeater implements CommandModule {
               timeout: args.timeout as number,
               proxyUrl: (args.proxyTarget ?? args.proxy) as string,
               certs: args.cert as Cert[],
+              pkcs11: RunRepeater.pkcs11Options(args),
               maxBodySize: Infinity,
               maxContentLength: 100,
               reuseConnection:
@@ -344,7 +485,14 @@ export class RunRepeater implements CommandModule {
     }
 
     if (args.daemon) {
-      await repeaterLauncher.install();
+      // The service starts without a terminal to watch: pin the library the
+      // user saw connected now instead of searching again at every start.
+      const discovery = container.resolve<RequestExecutorOptions>(
+        RequestExecutorOptions
+      ).pkcs11?.discovery;
+      await repeaterLauncher.install(
+        discovery ? ['--pkcs11-module', discovery.path] : []
+      );
       process.exitCode = 0;
 
       return;
@@ -358,9 +506,12 @@ export class RunRepeater implements CommandModule {
         })
       );
 
+      await RunRepeater.prepareExecutors();
       await repeaterLauncher.run(args.id as string, args.run as boolean);
     } catch (error) {
-      captureException(error);
+      if (!(error instanceof Pkcs11PinPromptCancelledError)) {
+        captureException(error);
+      }
       logger.error(
         ErrorMessageFactory.genericCommandError({ error, command: 'repeater' })
       );

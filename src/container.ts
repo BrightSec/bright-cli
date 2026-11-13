@@ -9,6 +9,10 @@ import {
   WsRequestExecutor
 } from './RequestExecutor';
 import {
+  DefaultPkcs11ModuleLocator,
+  Pkcs11ModuleLocator
+} from './RequestExecutor/Pkcs11/Pkcs11ModuleLocator';
+import {
   DefaultVirtualScripts,
   FSScriptLoader,
   ScriptLoader,
@@ -116,6 +120,9 @@ container
     },
     { lifecycle: Lifecycle.Singleton }
   )
+  .register<Pkcs11ModuleLocator>(Pkcs11ModuleLocator, {
+    useFactory: () => new DefaultPkcs11ModuleLocator()
+  })
   .register(
     VirtualScripts,
     {

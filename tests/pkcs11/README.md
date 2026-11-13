@@ -1,0 +1,114 @@
+# PKCS#11 test environment
+
+A software token ([SoftHSM2](https://github.com/softhsm/SoftHSMv2)) and an mTLS target, for developing and testing smart-card (PKCS#11) client certificates without hardware.
+
+`setup.sh` creates a throwaway token `bright-test` (user PIN `1234`) holding an RSA-2048 client key and its certificate, both labelled `client`. The private key exists only on the token. The target only accepts clients presenting a certificate issued by the test CA.
+
+Like a YubiKey's attestation certificate, a decoy `client attestation` shares the key's id `01` and public key, but comes from another CA and expires later. A provider that resolves the certificate by id alone picks the decoy, and the target rejects it.
+
+`tls-stack.spec.ts` checks that the `@brightsec/node-libcurl` binding can complete that handshake with the key on the token. `repeater.spec.ts` sends requests through the Repeater's `HttpRequestExecutor` with `--pkcs11-cert` options: login count, connection pooling, and the error codes for a wrong PIN or a missing token. Both run in CI on changes to this folder, to `src/RequestExecutor` or to `package-lock.json`.
+
+`repeater-smoke.ts` checks a built Repeater (executable, npm install or Docker image). It stands in for the Bright cloud on `localhost:8000`, sends the Repeater one request and checks the status code or `errorCode`:
+
+```bash
+npx ts-node tests/pkcs11/target.ts &
+npx ts-node tests/pkcs11/repeater-smoke.ts https://localhost:8443/ 200 -- \
+  ./bin/cli repeater --hostname localhost --token any.token --id 8PY6wKetVqmfMC9K9g4A7Y \
+  --pkcs11-module "$PKCS11_TEST_MODULE" \
+  --pkcs11-cert "{\"hostname\":\"localhost\",\"port\":8443,\"pinFile\":\"$PWD/tests/pkcs11/.work/pin.txt\"}"
+```
+
+## Check a remote mTLS target
+
+`remote/positive.sh` and `remote/negative.sh` put one client certificate on a throwaway SoftHSM2 token (not the `setup.sh` one) and send one request through the Repeater built from this checkout to a remote target that requires client certificates. `repeater-smoke.ts` stands in for the Bright cloud, so no API key is needed. Both need `npm ci && npm run build`, SoftHSM2, OpenSC and the OpenSSL PKCS#11 provider.
+
+```bash
+# Issued by a CA the target trusts: the request must get 200.
+tests/pkcs11/remote/positive.sh https://mtls.example.com/ client.p12 <p12 password>
+
+# A self-signed certificate (or pass a PKCS#12 from another CA): the target must
+# reject it in the TLS handshake, so the Repeater returns an errorCode and no status.
+tests/pkcs11/remote/negative.sh https://mtls.example.com/ [client.p12 <p12 password>]
+```
+
+## Run on Linux (Docker)
+
+```bash
+docker build -t bright-cli-pkcs11 tests/pkcs11
+docker run --rm -v "$PWD":/app -v bright-cli-pkcs11-node-modules:/app/node_modules bright-cli-pkcs11 \
+  bash -c 'npm ci -q --ignore-scripts && npm rebuild @brightsec/node-libcurl pkcs11js \
+    && tests/pkcs11/setup.sh && . tests/pkcs11/.work/pkcs11.env && npm run test:pkcs11'
+```
+
+The named volume keeps the Linux `node_modules` apart from the host's.
+
+## Run on macOS
+
+```bash
+brew install softhsm libp11 opensc
+tests/pkcs11/setup.sh
+. tests/pkcs11/.work/pkcs11.env
+npm run test:pkcs11
+```
+
+Homebrew's libp11 is built against OpenSSL 4, which has no engines, so the engine test is skipped on macOS.
+
+## Run on Windows (Git Bash)
+
+Install [OpenSC](https://github.com/OpenSC/OpenSC/releases) (for `pkcs11-tool`), unpack the [SoftHSM2 portable build](https://github.com/disig/SoftHSM2-for-Windows/releases) and the [libp11 x64 build](https://github.com/OpenSC/libp11/releases) (which contains `pkcs11prov.dll`), and point `setup.sh` at them:
+
+```bash
+export PKCS11_TEST_SOFTHSM_DIR=/c/tools/SoftHSM2       # contains bin/ and lib/softhsm2-x64.dll
+export PKCS11_TEST_PROVIDER_DIR=/c/tools/libp11        # contains pkcs11prov.dll
+export PKCS11_TEST_OPENSSL_DIR="/c/Program Files/OpenSSL/bin"  # contains libcrypto-3-x64.dll
+tests/pkcs11/setup.sh
+. tests/pkcs11/.work/pkcs11.env
+npm run test:pkcs11
+```
+
+`pkcs11prov.dll` links against `libcrypto-3-x64.dll`, which libp11 doesn't ship; the generated `pkcs11.env` puts all three directories on `PATH` so Windows can resolve the DLLs. The engine test is skipped: the Windows binding has no engine loader.
+
+## Manual testing
+
+After loading `pkcs11.env`, start the target with:
+
+```bash
+npx ts-node tests/pkcs11/target.ts   # https://localhost:8443/, port via PKCS11_TEST_TARGET_PORT
+```
+
+Token URIs:
+
+| Object      | URI                                                   |
+| ----------- | ----------------------------------------------------- |
+| Private key | `pkcs11:token=bright-test;object=client;type=private` |
+| Certificate | `pkcs11:token=bright-test;object=client;type=cert`    |
+
+Inspect the token with `pkcs11-tool --module "$PKCS11_TEST_MODULE" --login --pin 1234 --list-objects`.
+
+## Environment written by `setup.sh`
+
+| Variable                                        | Purpose                                                                                                             |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `SOFTHSM2_CONF`                                 | Points SoftHSM2 at the throwaway token directory.                                                                   |
+| `OPENSSL_MODULES` / `OPENSSL_ENGINES`           | Directories of the PKCS#11 provider / engine. Required: the binding's built-in paths point at its CI host.          |
+| `PKCS11_PROVIDER_MODULE` / `PKCS11_MODULE_PATH` | Vendor PKCS#11 module, as read by pkcs11-provider / libp11.                                                         |
+| `OPENSSL_CONF` (Linux)                          | Loads pkcs11-provider with the `no-deinit` quirk, which concurrent provider instances need (see Known limitations). |
+| `PKCS11_TEST_*`                                 | Token, object, PIN, PKI directory and provider/engine names used by the tests.                                      |
+
+## Library discovery on Windows
+
+Without `--pkcs11-module`, the Repeater on Windows looks for the vendor library in the default install locations of common card software (`src/RequestExecutor/Pkcs11/Pkcs11ModuleCandidates.ts`, in the order tried). It never loads a file that is not x64, and loads each other candidate in a child process (`bright-cli __pkcs11-probe <dll>`), so a library that crashes or hangs does not take the Repeater down. It picks the first library that shows the token named in `--pkcs11-cert` (or any token), otherwise the first that loads, and logs it:
+
+```text
+PKCS#11: --pkcs11-module is not set; connected the Thales SafeNet Authentication Client (IDPrime) library C:\Program Files\SafeNet\Authentication\SAC\x64\IDPrimePKCS1164.dll (1 token present). To keep this choice, pass --pkcs11-module "C:\Program Files\SafeNet\Authentication\SAC\x64\IDPrimePKCS1164.dll".
+```
+
+`--log-level verbose` lists every location checked and each probe's result. `--daemon` writes the library it found into the service's arguments. HSM libraries and SoftHSM2 are not in the list, so to try discovery with SoftHSM2, copy `lib/softhsm2-x64.dll` (it depends on system DLLs only) to one of the listed paths, e.g. `C:\Program Files\SafeNet\Authentication\SAC\x64\IDPrimePKCS1164.dll`, and remove it afterwards.
+
+## Known limitations
+
+- **One PKCS#11 module per process.** curl loads and unloads the provider together with each easy handle, and the unload tears down state of the process-wide module (`C_Finalize`, `C_CloseAllSessions`). A fresh connection on a _new_ handle in the same process then fails (`PKCS11 Module has not been initialized yet`, or `provider signature failure` with libp11). Keeping the easy handles long-lived avoids it with both providers. With several long-lived handles at once, pkcs11-provider additionally needs the `no-deinit` quirk (otherwise: `The specified key handle is not valid`); libp11 doesn't. Connection reuse reduces how often any of this matters. The tests run each case in its own process and cover the long-lived-handle mode explicitly.
+- **The PIN goes in the key URI for providers** (`?pin-value=`). Providers ignore `KEYPASSWD`; the engine honours it.
+- **libcurl reports every key-loading failure the same way.** A wrong PIN, a missing token and a bad module path all surface as `CURLE_SSL_CERTPROBLEM` (58).
+- **SoftHSM2 can't simulate readers or card removal**, and its signing is far faster than a real card's. Use a real card to check error handling and throughput.
+- **Not covered:** the Node `tls` (WebSocket) path, which is out of scope.

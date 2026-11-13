@@ -25,7 +25,7 @@
     "node": ">=24 <=26"
   },
   "dependencies": {
-    "@brightsec/node-libcurl": "5.1.6",
+    "@brightsec/node-libcurl": "5.1.7-1",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "@neuralegion/os-service": "^2.0.7",
     "@neuralegion/raw-socket": "^2.0.2",
@@ -90,6 +90,7 @@
     "prettier": "^2.7.1",
     "resedit": "3.1.0",
     "semantic-release": "^25.0.2",
+    "socket.io": "4.8.3",
     "terser-webpack-plugin": "^5.3.16",
     "ts-jest": "^29.4.6",
     "ts-loader": "^9.5.4",
@@ -138,6 +139,7 @@
       "./node_modules/@neuralegion/raw-socket/prebuilds/win32-x64/@neuralegion+raw-socket.abi137.node",
       "./node_modules/@neuralegion/raw-socket/prebuilds/linux-x64/@neuralegion+raw-socket.abi137.glibc.node",
       "./node_modules/@neuralegion/raw-socket/prebuilds/darwin-x64+arm64/@neuralegion+raw-socket.abi137.node",
+      "./node_modules/pkcs11js/build/Release/pkcs11.node",
       "./node_modules/rotating-file-stream/**"
     ],
     "targets": [
@@ -161,6 +163,7 @@
     "test:unit": "cross-env NODE_ENV=test jest src",
     "test:e2e": "cross-env NODE_ENV=test jest tests/e2e",
     "test:smoke": "cross-env NODE_ENV=test jest tests/smoke",
+    "test:pkcs11": "cross-env NODE_ENV=test jest tests/pkcs11 --runInBand --testTimeout=60000",
     "build": "webpack --config webpack.config.js --mode=production",
     "build:pkg": "pkg .",
     "prepare": "is-ci || husky install",
@@ -193,5 +196,8 @@
     "cosmiconfig": {
       "typescript": "5.9.3"
     }
+  },
+  "optionalDependencies": {
+    "pkcs11js": "2.1.7"
   }
 }

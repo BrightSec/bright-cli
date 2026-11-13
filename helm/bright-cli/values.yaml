@@ -54,6 +54,46 @@ repeater:
   # Additional arguments for bright-cli repeater command
   extraArgs: {}
     # proxy: "http://proxy.example.com:8080"
+
+  # Additional environment variables, volumes and mounts for the repeater
+  # container, e.g. a vendor PKCS#11 module and the configuration it reads.
+  extraEnv: []
+    # - name: SOFTHSM2_CONF
+    #   value: /etc/softhsm/softhsm2.conf
+  extraVolumes: []
+    # - name: vendor-module
+    #   hostPath:
+    #     path: /usr/lib/vendor
+  extraVolumeMounts: []
+    # - name: vendor-module
+    #   mountPath: /opt/vendor
+    #   readOnly: true
+
+  # Client certificates whose private key is on a PKCS#11 token (smart card,
+  # USB token, HSM), for HTTPS targets. Enabled when certs is not empty.
+  pkcs11:
+    # PKCS#11 library of the card vendor (--pkcs11-module). The image ships
+    # OpenSC for PIV/CAC cards; other modules must be built for Alpine (musl)
+    # and mounted with extraVolumes.
+    module: /usr/lib/opensc-pkcs11.so
+    # One --pkcs11-cert entry per target. Entries without "pinFile" or
+    # "pinEnv" read the PIN from pinSecret. Quote "id", or 01 becomes 1.
+    certs: []
+      # - hostname: example.com
+      #   port: 443
+      #   token: "My Card"
+      #   label: "Certificate for PIV Authentication"
+      #   # or by CKA_ID: id: "01"
+    # Existing Secret holding the token PIN, mounted as a file readable through
+    # podSecurityContext.fsGroup; keep fsGroup set when overriding it.
+    pinSecret:
+      name: ""
+      key: pin
+    # Host directory with the pcscd socket (pcscd.comm), for a card reader
+    # attached to the node. Uses a hostPath volume, which only the
+    # "privileged" Pod Security level allows.
+    pcscdSocketDir: ""
+      # /run/pcscd
   
   # Node selector - constrains pods to nodes with specific labels
   nodeSelector: {}

@@ -1,10 +1,10 @@
 {
   "name": "@brightsec/cli",
-  "version": "13.17.1",
+  "version": "13.17.2-next.4",
   "private": false,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NeuraLegion/bright-cli.git"
+    "url": "git+https://github.com/BrightSec/bright-cli.git"
   },
   "publishConfig": {
     "access": "public"
@@ -14,7 +14,7 @@
     "bright-cli": "./dist/index.js"
   },
   "bugs": {
-    "url": "https://github.com/NeuraLegion/bright-cli/issues"
+    "url": "https://github.com/BrightSec/bright-cli/issues"
   },
   "commitlint": {
     "extends": [
@@ -106,7 +106,7 @@
   "files": [
     "dist"
   ],
-  "homepage": "https://github.com/NeuraLegion/bright-cli#readme",
+  "homepage": "https://github.com/BrightSec/bright-cli#readme",
   "keywords": [
     "nexploit",
     "cli",
@@ -184,6 +184,9 @@
     "proxy-addr": "^2.0.8",
     "ip-address": "^10.3.1",
     "socket.io-parser": "^4.2.7",
+    "node-forge": "^1.4.1",
+    "body-parser": "^2.4.0",
+    "follow-redirects": "^1.16.2",
     "@istanbuljs/load-nyc-config": {
       "js-yaml": "^3.15.2"
     },

@@ -1373,6 +1373,123 @@ describe('HttpRequestExecutor', () => {
       expect(response.body).toEqual('original');
     });
 
+    it('should run onResponse when the script exports only onResponse (no handle)', async () => {
+      // arrange: a response-only script must not require a `handle` export.
+      // Before the fix, the missing `handle` threw during the request transform
+      // and the request failed before reaching the target, so onResponse never
+      // ran.
+      const { baseUrl } = await startServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('original');
+      });
+      const { request } = createRequest({ url: baseUrl });
+      const { hostname: virtualScriptId } = new URL(baseUrl);
+      const virtualScript = new VirtualScript(
+        virtualScriptId,
+        VirtualScriptType.LOCAL,
+        `module.exports.handle = (req) => req; module.exports.onResponse = (res) => ({ ...res, body: "intercepted" });`
+      );
+      virtualScript.compile();
+      when(virtualScriptsMock.find(virtualScriptId)).thenReturn(
+        undefined,
+        virtualScript
+      );
+      const sut = buildSut();
+
+      // act
+      const response = await sut.execute(request);
+
+      // assert
+      expect(response.statusCode).toEqual(200);
+      expect(response.body).toEqual('intercepted');
+    });
+
+    it('should run onResponse for a 5xx response when the script exports only onResponse', async () => {
+      // arrange: the reported bug - response hooks did not fire for error
+      // responses because a response-only (handle-less) script broke the
+      // request transform.
+      const { baseUrl } = await startServer((_req, res) => {
+        res.writeHead(500, { 'content-type': 'text/plain' });
+        res.end('server error');
+      });
+      const { request } = createRequest({ url: baseUrl });
+      const { hostname: virtualScriptId } = new URL(baseUrl);
+      const virtualScript = new VirtualScript(
+        virtualScriptId,
+        VirtualScriptType.LOCAL,
+        'module.exports.onResponse = (res) => ({ ...res, body: "intercepted" });'
+      );
+      virtualScript.compile();
+      when(virtualScriptsMock.find(virtualScriptId)).thenReturn(
+        undefined,
+        virtualScript
+      );
+      const sut = buildSut();
+
+      // act
+      const response = await sut.execute(request);
+
+      // assert
+      expect(response.statusCode).toEqual(500);
+      expect(response.body).toEqual('intercepted');
+    });
+
+    it('should expose the 5xx status code to the onResponse hook', async () => {
+      // arrange
+      const { baseUrl } = await startServer((_req, res) => {
+        res.writeHead(503, { 'content-type': 'text/plain' });
+        res.end('unavailable');
+      });
+      const { request } = createRequest({ url: baseUrl });
+      const { hostname: virtualScriptId } = new URL(baseUrl);
+      const virtualScript = new VirtualScript(
+        virtualScriptId,
+        VirtualScriptType.LOCAL,
+        'module.exports.onResponse = (res) => ({ ...res, body: `seen:${res.statusCode}` });'
+      );
+      virtualScript.compile();
+      when(virtualScriptsMock.find(virtualScriptId)).thenReturn(
+        undefined,
+        virtualScript
+      );
+      const sut = buildSut();
+
+      // act
+      const response = await sut.execute(request);
+
+      // assert
+      expect(response.statusCode).toEqual(503);
+      expect(response.body).toEqual('seen:503');
+    });
+
+    it('should forward the request untouched when the script exports neither handle nor onResponse', async () => {
+      // arrange: a script with no recognised hooks must not fail the request.
+      const { baseUrl } = await startServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'text/plain' });
+        res.end('original');
+      });
+      const { request } = createRequest({ url: baseUrl });
+      const { hostname: virtualScriptId } = new URL(baseUrl);
+      const virtualScript = new VirtualScript(
+        virtualScriptId,
+        VirtualScriptType.LOCAL,
+        'module.exports.unrelated = () => {};'
+      );
+      virtualScript.compile();
+      when(virtualScriptsMock.find(virtualScriptId)).thenReturn(
+        undefined,
+        virtualScript
+      );
+      const sut = buildSut();
+
+      // act
+      const response = await sut.execute(request);
+
+      // assert
+      expect(response.statusCode).toEqual(200);
+      expect(response.body).toEqual('original');
+    });
+
     /** Builds a deterministic 0x00..0xFF repeating pattern. */
     const binaryPattern = (size: number): Buffer => {
       const pattern = Buffer.alloc(size);

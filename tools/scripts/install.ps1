@@ -11,7 +11,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 $VENDOR = "bright"
 $PRODUCT_NAME = "$VENDOR-cli"
 $INSTALL_DIR = Join-Path "$env:ProgramFiles" $VENDOR
-$DOWNLOAD_URL = "https://github.com/NeuraLegion/$PRODUCT_NAME/releases/latest/download/$PRODUCT_NAME-win-x64.exe"
+$DOWNLOAD_URL = "https://github.com/BrightSec/$PRODUCT_NAME/releases/latest/download/$PRODUCT_NAME-win-x64.exe"
 
 # Create an installation folder if not exist
 if (-not (Test-Path $INSTALL_DIR)) {

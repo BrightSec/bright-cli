@@ -40,6 +40,8 @@ export class Logger {
   private _logFile?: LogFile;
   private _logPath?: string;
   private _logOptions: LogOptions;
+  private terminalPauses = 0;
+  private heldTerminalWrites: (() => void)[] = [];
 
   constructor(
     logLevel: LogLevel = LogLevel.NOTICE,
@@ -121,6 +123,29 @@ export class Logger {
         rotate: 1
       });
       this._logPath = filePath;
+    }
+  }
+
+  /**
+   * Holds console output until the matching resumeTerminalOutput(), so that
+   * log lines do not land on a line the user is typing into. The log file is
+   * still written immediately.
+   */
+  public pauseTerminalOutput(): void {
+    this.terminalPauses++;
+  }
+
+  public resumeTerminalOutput(): void {
+    if (this.terminalPauses === 0) {
+      return;
+    }
+
+    this.terminalPauses--;
+
+    if (this.terminalPauses === 0) {
+      const held = this.heldTerminalWrites;
+      this.heldTerminalWrites = [];
+      held.forEach((write: () => void) => write());
     }
   }
 
@@ -225,11 +250,19 @@ export class Logger {
   }
 
   private writeToStdout(message: string): void {
-    process.stdout.write(`${message}\n`);
+    this.writeToTerminal(() => process.stdout.write(`${message}\n`));
   }
 
   private writeToStderr(message: string): void {
-    process.stderr.write(`${message}\n`);
+    this.writeToTerminal(() => process.stderr.write(`${message}\n`));
+  }
+
+  private writeToTerminal(write: () => void): void {
+    if (this.terminalPauses) {
+      this.heldTerminalWrites.push(write);
+    } else {
+      write();
+    }
   }
 }
 

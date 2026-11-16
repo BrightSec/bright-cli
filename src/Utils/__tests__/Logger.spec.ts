@@ -188,4 +188,74 @@ describe('Logger', () => {
       }).not.toThrow();
     });
   });
+
+  describe('pauseTerminalOutput', () => {
+    it('should hold stdout and stderr lines until the output is resumed', () => {
+      // arrange
+      logger = new Logger(LogLevel.VERBOSE);
+      const order: string[] = [];
+      stdoutSpy.mockImplementation((chunk: string) => order.push(chunk));
+      stderrSpy.mockImplementation((chunk: string) => order.push(chunk));
+
+      // act
+      logger.pauseTerminalOutput();
+      logger.debug('first');
+      logger.error('second');
+      const whilePaused = order.length;
+      logger.resumeTerminalOutput();
+
+      // assert
+      expect(whilePaused).toBe(0);
+      expect(order).toEqual([
+        expect.stringContaining('first'),
+        expect.stringContaining('second')
+      ]);
+    });
+
+    it('should keep writing to the log file', () => {
+      // arrange
+      logger = new Logger();
+      (logger as any)._logFile = mockLogFile;
+
+      // act
+      logger.pauseTerminalOutput();
+      logger.log('test message');
+
+      // assert
+      expect(mockLogFile.write).toHaveBeenCalledWith(
+        expect.stringContaining('test message')
+      );
+    });
+  });
+
+  describe('resumeTerminalOutput', () => {
+    it('should release the held lines only when every pause is resumed', () => {
+      // arrange
+      logger = new Logger();
+      logger.pauseTerminalOutput();
+      logger.pauseTerminalOutput();
+      logger.log('held');
+
+      // act
+      logger.resumeTerminalOutput();
+      const afterFirst = stdoutSpy.mock.calls.length;
+      logger.resumeTerminalOutput();
+
+      // assert
+      expect(afterFirst).toBe(0);
+      expect(stdoutSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not hold later lines after an unmatched resume', () => {
+      // arrange
+      logger = new Logger();
+      logger.resumeTerminalOutput();
+
+      // act
+      logger.log('not held');
+
+      // assert
+      expect(stdoutSpy).toHaveBeenCalledTimes(1);
+    });
+  });
 });

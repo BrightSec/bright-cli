@@ -9,7 +9,8 @@ export interface RepeaterLauncher {
 
   uninstall(): Promise<void>;
 
-  install(): Promise<void>;
+  /** @param extraArgs appended to the service's command line, after the current arguments. */
+  install(extraArgs?: string[]): Promise<void>;
 }
 
 export const RepeaterLauncher: unique symbol = Symbol('RepeaterLauncher');

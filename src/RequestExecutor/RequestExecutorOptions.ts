@@ -1,4 +1,5 @@
 import { Cert } from './Request';
+import { Pkcs11Options } from './Pkcs11Cert';
 
 export interface WhitelistMimeType {
   type: string;
@@ -17,6 +18,7 @@ export interface RequestExecutorOptions {
   proxyUrl?: string;
   headers?: Record<string, string | string[]>;
   certs?: Cert[];
+  pkcs11?: Pkcs11Options;
   whitelistMimes?: WhitelistMimeType[];
   maxBodySize?: number;
   maxContentLength?: number;

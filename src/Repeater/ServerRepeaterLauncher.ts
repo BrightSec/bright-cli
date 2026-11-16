@@ -55,10 +55,10 @@ export class ServerRepeaterLauncher implements RepeaterLauncher {
     return Promise.resolve();
   }
 
-  public async install(): Promise<void> {
+  public async install(extraArgs: string[] = []): Promise<void> {
     const { command, args: execArgs } = Helpers.getExecArgs({
       escape: false,
-      include: ['--run'],
+      include: ['--run', ...extraArgs],
       exclude: ['--daemon', '-d']
     });
 

@@ -45,12 +45,24 @@ RUN echo 'http://dl-cdn.alpinelinux.org/alpine/edge/main' >> /etc/apk/repositori
 # with the "gssapi" vcpkg feature. The krb5 package provides kinit/klist
 # for ticket management; krb5-libs provides the runtime GSSAPI libraries
 # that libcurl links against when built with gssapi support.
+# PKCS#11 (--pkcs11-cert): libp11 is the OpenSSL provider, as Alpine has no
+# pkcs11-provider package. OpenSC is the card module, because vendor modules
+# built for glibc do not load on musl; it reaches the reader through the host's
+# pcscd socket mounted at /run/pcscd, via pcsc-lite-libs, which opensc does not
+# depend on. pkcs11js is optional, so npm would skip a failed native build
+# silently; the last command loads both. C_Initialize succeeds without pcscd.
 RUN set -eux; \
     apk add --no-cache --virtual .build-deps python3 make g++ curl-dev && \
     npm i -g -q @brightsec/cli@${VERSION} && \
     NPM_CONFIG_PREFIX=/usr/local npm uninstall -g npm && \
     apk del .build-deps && \
-    apk add --no-cache libcurl krb5-libs krb5
+    apk add --no-cache libcurl krb5-libs krb5 libp11 opensc pcsc-lite-libs && \
+    node -e " \
+      const { PKCS11 } = require('$NPM_CONFIG_PREFIX/lib/node_modules/@brightsec/cli/node_modules/pkcs11js'); \
+      const opensc = new PKCS11(); \
+      opensc.load('/usr/lib/opensc-pkcs11.so'); \
+      opensc.C_Initialize(); \
+      opensc.C_Finalize();"
 
 # set the directory and file permissions to allow users in the root group to access files
 # for details please refer to the doc at https://docs.openshift.com/container-platform/3.11/creating_images/guidelines.html#openshift-specific-guidelines

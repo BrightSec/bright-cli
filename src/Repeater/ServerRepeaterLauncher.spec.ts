@@ -8,10 +8,20 @@ import { StartupManager } from '../StartupScripts';
 import { Certificates, RequestExecutorOptions } from '../RequestExecutor';
 import { CliInfo } from '../Config';
 import { Logger, logger } from '../Utils';
-import { anything, instance, mock, reset, spy, verify, when } from 'ts-mockito';
+import {
+  anything,
+  capture,
+  instance,
+  mock,
+  reset,
+  spy,
+  verify,
+  when
+} from 'ts-mockito';
 
 describe('ServerRepeaterLauncher', () => {
   const mockedRepeaterServer = mock<RepeaterServer>();
+  const mockedStartupManager = mock<StartupManager>();
   const handlers = new Map<string, (payload?: unknown) => unknown>();
 
   let loggerSpy: Logger;
@@ -29,7 +39,7 @@ describe('ServerRepeaterLauncher', () => {
       instance(mock<RuntimeDetector>()),
       instance(mock<VirtualScripts>()),
       instance(mockedRepeaterServer),
-      instance(mock<StartupManager>()),
+      instance(mockedStartupManager),
       instance(mock<RepeaterCommandHub>()),
       instance(mock<Certificates>()),
       instance(mock<ScriptLoader>()),
@@ -40,7 +50,11 @@ describe('ServerRepeaterLauncher', () => {
 
   afterEach(() => {
     handlers.clear();
-    reset<RepeaterServer | Logger>(mockedRepeaterServer, loggerSpy);
+    reset<RepeaterServer | Logger | StartupManager>(
+      mockedRepeaterServer,
+      loggerSpy,
+      mockedStartupManager
+    );
   });
 
   describe('run', () => {
@@ -55,6 +69,25 @@ describe('ServerRepeaterLauncher', () => {
       verify(
         loggerSpy.warn('Reconnecting to Bright cloud (attempt %d)', 2)
       ).once();
+    });
+  });
+
+  describe('install', () => {
+    it('should append the extra arguments to the service command line', async () => {
+      // arrange
+      when(mockedStartupManager.install(anything())).thenResolve();
+      when(loggerSpy.log(anything(), anything())).thenReturn();
+
+      // act
+      await launcher.install(['--pkcs11-module', 'C:\\Bright\\vendor.dll']);
+
+      // assert
+      const { args } = capture(mockedStartupManager.install).last()[0];
+      expect(args.slice(-3)).toEqual([
+        '--run',
+        '--pkcs11-module',
+        'C:\\Bright\\vendor.dll'
+      ]);
     });
   });
 });

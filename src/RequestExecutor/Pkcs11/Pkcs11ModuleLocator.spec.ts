@@ -28,7 +28,6 @@ describe('DefaultPkcs11ModuleLocator', () => {
   const cert = (overrides: Partial<Pkcs11Cert> = {}): Pkcs11Cert => ({
     hostname: 'example.com',
     pinEnv: 'CARD_PIN',
-    cert: 'token',
     maxConcurrency: 1,
     ...overrides
   });

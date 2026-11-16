@@ -230,10 +230,9 @@ export class Pkcs11Preflight {
 
   private resolveIdentity(cert: Pkcs11Cert): Pkcs11Identity {
     const { module, token, session, pin } = this.login(cert);
-    const certFile =
-      cert.cert === 'token' ? undefined : this.readCertFile(cert);
+    const certFile = cert.certFile ? this.readCertFile(cert) : undefined;
     const { key, certificate } =
-      cert.cert === 'token'
+      cert.certFile === undefined
         ? this.selectFromToken(module, session, token, cert)
         : {
             key: this.selectKeyForFile(module, session, token, cert, certFile),
@@ -275,7 +274,7 @@ export class Pkcs11Preflight {
         pin
       }),
       certificate: certificate?.value,
-      certFile: certificate ? undefined : cert.cert,
+      certFile: cert.certFile,
       tls12Only
     };
   }
@@ -630,7 +629,7 @@ export class Pkcs11Preflight {
             ? `No private key on token "${
                 token.label
               }" holds the public key of the certificate in ${
-                cert.cert
+                cert.certFile
               }. Keys found:\n${this.list(
                 keys.map(({ key }: KeyEntry) => this.describeObject(key))
               )}`
@@ -703,7 +702,7 @@ export class Pkcs11Preflight {
       this.choose(usable)?.certificate ?? usable[0]?.certificate ?? all[0];
     const message =
       cert.label === undefined && cert.id === undefined
-        ? `Token "${token.label}" holds no certificates. Set "cert" to a PEM file with the certificate for ${cert.hostname}.`
+        ? `Token "${token.label}" holds no certificates. Set "certFile" to a PEM file with the certificate for ${cert.hostname}.`
         : [
             `No certificate${this.describeSelector(cert)} on token "${
               token.label
@@ -763,7 +762,7 @@ export class Pkcs11Preflight {
         this.list(certificates.map((c) => this.describeCertificate(c))),
         field
           ? this.restartHint(cert, field, certificates[0])
-          : `Their labels and ids are the same; set "cert" to a PEM file with the one ${cert.hostname} accepts and restart the Repeater.`
+          : `Their labels and ids are the same; set "certFile" to a PEM file with the one ${cert.hostname} accepts and restart the Repeater.`
       ].join('\n'),
       true
     );
@@ -779,7 +778,7 @@ export class Pkcs11Preflight {
     return new Pkcs11Error(
       Pkcs11ErrorCode.KEY_NOT_FOUND,
       [
-        `Several private keys on token "${token.label}" may belong to the certificate in ${cert.cert}, and the token does not expose their public keys to tell:`,
+        `Several private keys on token "${token.label}" may belong to the certificate in ${cert.certFile}, and the token does not expose their public keys to tell:`,
         this.list(keys.map(this.describeObject)),
         field
           ? this.restartHint(cert, field, keys[0])
@@ -825,7 +824,7 @@ export class Pkcs11Preflight {
       id: cert.id,
       label: cert.label,
       [field]: field === 'id' ? example.id?.toString('hex') : example.label,
-      cert: cert.cert === 'token' ? undefined : cert.cert,
+      certFile: cert.certFile,
       maxConcurrency:
         cert.maxConcurrency === 1 ? undefined : cert.maxConcurrency
     };
@@ -895,7 +894,7 @@ export class Pkcs11Preflight {
 
   private readCertFile(cert: Pkcs11Cert): Buffer | undefined {
     try {
-      return Buffer.from(this.readFile(cert.cert));
+      return Buffer.from(this.readFile(cert.certFile));
     } catch {
       return undefined;
     }

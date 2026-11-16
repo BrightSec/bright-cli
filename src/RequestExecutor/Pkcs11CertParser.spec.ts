@@ -47,7 +47,7 @@ describe('Pkcs11CertParser', () => {
           token: undefined,
           label: undefined,
           id: undefined,
-          cert: 'token',
+          certFile: undefined,
           maxConcurrency: 1
         }
       ]);
@@ -62,7 +62,7 @@ describe('Pkcs11CertParser', () => {
         token: 'Alice PIV',
         label: 'tls-client',
         id: 'AB01',
-        cert: certFile,
+        certFile,
         maxConcurrency: 2
       };
 
@@ -80,7 +80,7 @@ describe('Pkcs11CertParser', () => {
           token: 'Alice PIV',
           label: 'tls-client',
           id: 'ab01',
-          cert: certFile,
+          certFile,
           maxConcurrency: 2
         }
       ]);
@@ -122,12 +122,12 @@ describe('Pkcs11CertParser', () => {
         {
           hostname: 'example.com',
           pinFile: relative(process.cwd(), pinFile),
-          cert: relative(process.cwd(), certFile)
+          certFile: relative(process.cwd(), certFile)
         }
       ]);
 
       // assert
-      expect(result).toMatchObject({ pinFile, cert: certFile });
+      expect(result).toMatchObject({ pinFile, certFile });
     });
 
     it.each([
@@ -151,6 +151,11 @@ describe('Pkcs11CertParser', () => {
         'a literal PIN',
         { hostname: 'example.com', pinFile, pin: '1234' },
         /literal "pin" is not accepted/
+      ],
+      [
+        'the former "cert"',
+        { hostname: 'example.com', pinFile, cert: 'token' },
+        /"cert" was replaced by "certFile".*Leave it out to read the certificate from the token/
       ],
       [
         'the former key selector "object"',
@@ -187,9 +192,9 @@ describe('Pkcs11CertParser', () => {
         {
           hostname: 'example.com',
           pinFile,
-          cert: join(dir, 'nope.pem')
+          certFile: join(dir, 'nope.pem')
         },
-        /"cert" .* does not exist/
+        /"certFile" .* does not exist/
       ],
       [
         'port 0',
@@ -298,7 +303,7 @@ describe('Pkcs11CertParser', () => {
     it('should accept absolute paths when installing the daemon', () => {
       // act
       const result = Pkcs11CertParser.parse(
-        [{ hostname: 'example.com', pinFile, cert: certFile }],
+        [{ hostname: 'example.com', pinFile, certFile }],
         { daemon: true }
       );
 

@@ -20,6 +20,7 @@ describe('ServerRepeaterLauncher', () => {
   beforeEach(() => {
     loggerSpy = spy(logger);
     when(loggerSpy.warn(anything(), anything())).thenReturn();
+    when(loggerSpy.log(anything(), anything())).thenReturn();
     when(loggerSpy.log(anything(), anything(), anything())).thenReturn();
     when(mockedRepeaterServer.on(anything(), anything())).thenCall(
       (event: string, handler: (payload?: unknown) => unknown) =>
@@ -37,7 +38,7 @@ describe('ServerRepeaterLauncher', () => {
       {} as RequestExecutorOptions,
       {
         version: '1.0.0',
-        instanceId: '5a1c4a52-30c4-4d4e-9f43-1d0c1f6f2d8b'
+        instanceId: '3f9a1c07'
       } as CliInfo
     );
   });
@@ -48,16 +49,22 @@ describe('ServerRepeaterLauncher', () => {
   });
 
   describe('run', () => {
-    it('should print the instance ID in the startup line', async () => {
-      // act
+    it('should print the instance ID once the Repeater is deployed', async () => {
+      // arrange
+      when(mockedRepeaterServer.deploy(anything(), anything())).thenResolve({
+        repeaterId: '8PY6wKetVqmfMC9K9g4A7Y'
+      });
       await launcher.run('8PY6wKetVqmfMC9K9g4A7Y');
+
+      // act
+      await handlers.get(RepeaterServerEvents.CONNECTED)?.();
 
       // assert
       verify(
         loggerSpy.log(
-          'Starting the Repeater (%s, instance ID: %s)...',
+          'The Repeater (%s) started, instance ID: %s',
           '1.0.0',
-          '5a1c4a52-30c4-4d4e-9f43-1d0c1f6f2d8b'
+          '3f9a1c07'
         )
       ).once();
     });

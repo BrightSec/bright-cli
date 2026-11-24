@@ -108,11 +108,7 @@ export class ServerRepeaterLauncher implements RepeaterLauncher {
       await this.startupManager.run(() => this.close());
     }
 
-    logger.log(
-      'Starting the Repeater (%s, instance ID: %s)...',
-      this.info.version,
-      this.info.instanceId
-    );
+    logger.log('Starting the Repeater (%s)...', this.info.version);
 
     this.repeaterId = repeaterId;
 
@@ -212,7 +208,11 @@ export class ServerRepeaterLauncher implements RepeaterLauncher {
         },
         this.getRuntime()
       );
-      logger.log('The Repeater (%s) started', this.info.version);
+      logger.log(
+        'The Repeater (%s) started, instance ID: %s',
+        this.info.version,
+        this.info.instanceId
+      );
     } catch {
       // noop
     }

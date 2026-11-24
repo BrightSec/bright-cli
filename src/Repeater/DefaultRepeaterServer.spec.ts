@@ -71,7 +71,7 @@ describe('DefaultRepeaterServer', () => {
   };
   const info = {
     version: '13.18.0',
-    instanceId: '5a1c4a52-30c4-4d4e-9f43-1d0c1f6f2d8b'
+    instanceId: '3f9a1c07'
   } as CliInfo;
   const proxyFactoryMock = mock<ProxyFactory>();
   const lookupMock = io as unknown as jest.MockedFunction<() => FakeSocket>;

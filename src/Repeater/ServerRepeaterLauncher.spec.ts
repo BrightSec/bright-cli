@@ -20,6 +20,7 @@ describe('ServerRepeaterLauncher', () => {
   beforeEach(() => {
     loggerSpy = spy(logger);
     when(loggerSpy.warn(anything(), anything())).thenReturn();
+    when(loggerSpy.log(anything(), anything(), anything())).thenReturn();
     when(mockedRepeaterServer.on(anything(), anything())).thenCall(
       (event: string, handler: (payload?: unknown) => unknown) =>
         handlers.set(event, handler)
@@ -34,7 +35,10 @@ describe('ServerRepeaterLauncher', () => {
       instance(mock<Certificates>()),
       instance(mock<ScriptLoader>()),
       {} as RequestExecutorOptions,
-      { version: '1.0.0' } as CliInfo
+      {
+        version: '1.0.0',
+        instanceId: '5a1c4a52-30c4-4d4e-9f43-1d0c1f6f2d8b'
+      } as CliInfo
     );
   });
 
@@ -44,6 +48,20 @@ describe('ServerRepeaterLauncher', () => {
   });
 
   describe('run', () => {
+    it('should print the instance ID in the startup line', async () => {
+      // act
+      await launcher.run('8PY6wKetVqmfMC9K9g4A7Y');
+
+      // assert
+      verify(
+        loggerSpy.log(
+          'Starting the Repeater (%s, instance ID: %s)...',
+          '1.0.0',
+          '5a1c4a52-30c4-4d4e-9f43-1d0c1f6f2d8b'
+        )
+      ).once();
+    });
+
     it('should log a reconnecting warning on a reconnection attempt', async () => {
       // arrange
       await launcher.run('8PY6wKetVqmfMC9K9g4A7Y');

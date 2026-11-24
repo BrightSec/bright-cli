@@ -1,11 +1,14 @@
 import { sync } from 'find-up';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 
 export class CliInfo {
   public readonly cwd: string;
   public readonly version: string;
   public readonly distribution: string | undefined;
+  // Per process, so the server can tell apart two processes sharing a Repeater ID.
+  public readonly instanceId: string = randomUUID();
 
   constructor(cwd: string) {
     const packagePath = this.getPackagePath(cwd);

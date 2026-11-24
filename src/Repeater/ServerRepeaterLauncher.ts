@@ -108,7 +108,11 @@ export class ServerRepeaterLauncher implements RepeaterLauncher {
       await this.startupManager.run(() => this.close());
     }
 
-    logger.log('Starting the Repeater (%s)...', this.info.version);
+    logger.log(
+      'Starting the Repeater (%s, instance ID: %s)...',
+      this.info.version,
+      this.info.instanceId
+    );
 
     this.repeaterId = repeaterId;
 

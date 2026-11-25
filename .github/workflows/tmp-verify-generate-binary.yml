@@ -1,0 +1,113 @@
+# TEMPORARY: exercises deploy.yml's build + generate-binary without publishing.
+# Delete before merging.
+name: Verify generate-binary (temporary)
+
+on:
+  push:
+    branches: [ci/container-default-path]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        uses: ./.github/workflows/composite/npm
+
+      - name: Set default distribution
+        run: npm pkg set brightCli.distribution=package
+
+      - name: Build package
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build
+          retention-days: 1
+          path: |
+            dist
+            Dockerfile
+            package.json
+            package-lock.json
+            README.md
+            LICENSE
+            tools
+
+  # Keep strategy, runs-on and container identical to deploy.yml's generate-binary.
+  generate-binary:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: win
+          - os: macos-15
+            target: macos
+          - os: ubuntu-22.04
+            target: linux
+            container:
+              image: redhat/ubi8
+              options: "--user root"
+    runs-on: ${{ matrix.os }}
+    container:
+      image: ${{ matrix.container.image }}
+      options: ${{ matrix.container.options }}
+      env:
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: build
+
+      - name: Install dev-deps
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          dnf install -y dnf-utils \
+          && dnf install -y python3 gcc gcc-c++ make \
+          && rm -rf /var/cache/dnf
+
+      - name: Install deps
+        uses: ./.github/workflows/composite/npm
+
+      - name: Set distribution
+        run: npx json -I -f package.json -e "this.brightCli.distribution='${{ matrix.target }}-executable'"
+
+      - name: Build executable file
+        run: npm run build:pkg -- -t node24-${{ matrix.target }}-x64
+
+      - name: Set Windows version info
+        if: startsWith(matrix.os, 'win')
+        run: node .\tools\scripts\set-windows-version-info.mjs .\bin\cli.exe
+
+      # Unsigned: code signing would spend DigiCert KeyLocker quota on a throwaway build.
+      - name: Build MSI
+        if: startsWith(matrix.os, 'win')
+        run: .\tools\scripts\build-msi.ps1
+
+      - name: Run executable
+        shell: bash
+        run: ./bin/cli${{ startsWith(matrix.os, 'win') && '.exe' || '' }} version
+
+      - name: Calculate checksum
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "windows-2022" ]]; then
+            certutil -hashfile ./bin/cli.exe SHA256 | grep -v "CertUtil" | sed 's/SHA256 hash of .*://' | tr -d " \t\n\r" > checksum.txt
+            certutil -hashfile ./bin/bright-cli.msi SHA256 | grep -v "CertUtil" | sed 's/SHA256 hash of .*://' | tr -d " \t\n\r" > checksum.msi.txt
+          elif [[ "${{ matrix.os }}" == "macos-15" ]]; then
+            shasum -a 256 ./bin/cli | cut -d' ' -f1 > checksum.txt
+          else
+            sha256sum ./bin/cli | cut -d' ' -f1 > checksum.txt
+          fi
+          cat checksum.txt

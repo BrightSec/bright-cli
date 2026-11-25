@@ -1,4 +1,5 @@
 import { logger, ProxyFactory } from '../Utils';
+import { CliInfo } from '../Config/CliInfo';
 import {
   DeployCommandOptions,
   DeploymentRuntime,
@@ -24,6 +25,7 @@ import io, { Socket } from 'socket.io-client';
 import parser from 'socket.io-msgpack-parser';
 import { captureException, captureMessage, withScope } from '@sentry/node';
 import { EventEmitter, once } from 'node:events';
+import { hostname as osHostname } from 'node:os';
 
 export interface DefaultRepeaterServerOptions {
   readonly uri: string;
@@ -112,7 +114,8 @@ export class DefaultRepeaterServer implements RepeaterServer {
   constructor(
     @inject(ProxyFactory) private readonly proxyFactory: ProxyFactory,
     @inject(DefaultRepeaterServerOptions)
-    private readonly options: DefaultRepeaterServerOptions
+    private readonly options: DefaultRepeaterServerOptions,
+    @inject(CliInfo) private readonly info: CliInfo
   ) {}
 
   public disconnect() {
@@ -176,9 +179,14 @@ export class DefaultRepeaterServer implements RepeaterServer {
             rejectUnauthorized: !this.options.insecure
           })
         : undefined,
+      // Servers that predate instanceId/version/hostname ignore unknown auth
+      // keys, unlike the deploy runtime payload, which rejects them.
       auth: {
         token: this.options.token,
-        domain: hostname
+        domain: hostname,
+        instanceId: this.info.instanceId,
+        version: this.info.version,
+        hostname: osHostname()
       }
     });
 

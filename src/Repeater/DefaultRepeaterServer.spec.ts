@@ -5,9 +5,11 @@ import {
 } from './DefaultRepeaterServer';
 import { RepeaterErrorCodes, RepeaterServerEvents } from './RepeaterServer';
 import { ProxyFactory } from '../Utils';
+import { CliInfo } from '../Config';
 import { instance, mock, reset } from 'ts-mockito';
 import io from 'socket.io-client';
 import { EventEmitter } from 'node:events';
+import { hostname } from 'node:os';
 
 jest.mock('socket.io-client', () => jest.fn());
 
@@ -67,6 +69,10 @@ describe('DefaultRepeaterServer', () => {
     uri: 'http://localhost:8080',
     token: 'dummy-token'
   };
+  const info = {
+    version: '13.18.0',
+    instanceId: '3f9a1c07'
+  } as CliInfo;
   const proxyFactoryMock = mock<ProxyFactory>();
   const lookupMock = io as unknown as jest.MockedFunction<() => FakeSocket>;
 
@@ -97,7 +103,11 @@ describe('DefaultRepeaterServer', () => {
     socket = new FakeSocket();
     lookupMock.mockReturnValue(socket);
 
-    server = new DefaultRepeaterServer(instance(proxyFactoryMock), options);
+    server = new DefaultRepeaterServer(
+      instance(proxyFactoryMock),
+      options,
+      info
+    );
   });
 
   afterEach(() => {
@@ -107,6 +117,39 @@ describe('DefaultRepeaterServer', () => {
   });
 
   describe('connect', () => {
+    it('should identify the process in the handshake auth', async () => {
+      // act
+      await connect();
+
+      // assert
+      expect(lookupMock).toHaveBeenCalledWith(
+        options.uri,
+        expect.objectContaining({
+          auth: {
+            token: options.token,
+            domain: 'example.com',
+            instanceId: info.instanceId,
+            version: info.version,
+            hostname: hostname()
+          }
+        })
+      );
+    });
+
+    it('should keep the instance ID by reusing the socket on reconnection', async () => {
+      // arrange
+      await connect();
+
+      // act
+      socket.emit('connect_error', connectionError());
+      jest.advanceTimersByTime(6_500);
+      socket.emit('disconnect', 'io server disconnect');
+
+      // assert
+      expect(socket.connect).toHaveBeenCalledTimes(2);
+      expect(lookupMock).toHaveBeenCalledTimes(1);
+    });
+
     it('should reconnect after a retryable connection error', async () => {
       // arrange
       await connect();

@@ -208,7 +208,11 @@ export class ServerRepeaterLauncher implements RepeaterLauncher {
         },
         this.getRuntime()
       );
-      logger.log('The Repeater (%s) started', this.info.version);
+      logger.log(
+        'The Repeater (%s) started, instance ID: %s',
+        this.info.version,
+        this.info.instanceId
+      );
     } catch {
       // noop
     }

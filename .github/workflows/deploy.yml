@@ -98,7 +98,12 @@ jobs:
               image: redhat/ubi8
               options: "--user root"
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
+    container:
+      image: ${{ matrix.container.image }}
+      options: ${{ matrix.container.options }}
+      # An image without PATH in its config (e.g. rockylinux:9 9.9+) makes bash unfindable after setup-node.
+      env:
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
       - uses: actions/checkout@v4
         with:

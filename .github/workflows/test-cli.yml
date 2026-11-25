@@ -60,7 +60,11 @@ jobs:
     needs: resolve-version
     if: ${{ inputs.test_executables }}
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
+    container:
+      image: ${{ matrix.container }}
+      # rockylinux:9 (9.9+) sets no PATH in its image config; without it, bash isn't found after setup-node.
+      env:
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     env:
       ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
@@ -250,7 +254,11 @@ jobs:
     needs: resolve-version
     if: ${{ inputs.test_npm }}
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
+    container:
+      image: ${{ matrix.container }}
+      # rockylinux:9 (9.9+) sets no PATH in its image config; without it, bash isn't found after setup-node.
+      env:
+        PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     env:
       ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 

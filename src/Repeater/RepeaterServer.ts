@@ -54,12 +54,8 @@ export type RepeaterServerRequestResponse =
       errorCode?: string;
     }
   | {
-      // The request event payload could not be dispatched because it was
-      // malformed (the Request could not be constructed). This is distinct from
-      // an execution failure — which uses the { message, errorCode } variant
-      // produced by HttpRequestExecutor.execute's catch — and lets the bridge
-      // classify it as a bridge<->repeater contract failure rather than a target
-      // outage.
+      // The payload could not be turned into a Request. Unlike the
+      // { message, errorCode } variant, this is not a target-side failure.
       protocol: Protocol;
       protocolError: { code: RepeaterErrorCodes; message: string };
     };
@@ -78,9 +74,8 @@ export enum RepeaterErrorCodes {
   REPEATER_DEACTIVATED = 'repeater_deactivated',
   REPEATER_UNAUTHORIZED = 'repeater_unauthorized',
   REPEATER_NO_LONGER_SUPPORTED = 'repeater_no_longer_supported',
-  // A forwarded request the repeater could not construct/dispatch (a malformed
-  // request shape). Carried on the per-request `protocolError` ack, NOT on the
-  // deploy-time `error` event — so it never trips isCriticalError.
+  // Sent on the per-request `protocolError` ack, not the deploy-time `error`
+  // event, so it never trips isCriticalError.
   MALFORMED_REQUEST = 'malformed_request',
   UNKNOWN_ERROR = 'unknown_error',
   UNEXPECTED_ERROR = 'unexpected_error'

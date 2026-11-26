@@ -1,45 +1,27 @@
 /**
- * A non-throwing, string-only decomposition of a target URL, shared by every
+ * Non-throwing, string-only decomposition of a target URL, shared by every
  * consumer on the request-execute path.
  *
- * Motivation: the previous code split URL handling across two parsers — the
- * WHATWG `new URL()` (in the virtual-script and response-script lookups) and the
- * legacy `node:url` `parse()` (in curl configuration, proxy resolution, and
- * Kerberos gating). The two disagree on normalisation (IDNA, casing, port
- * handling), and `new URL()` THROWS on an authority defect, short-circuiting an
- * otherwise-deliverable scanner request into an `ERR_INVALID_URL` before it ever
- * reaches libcurl. This class replaces both with one decomposition that never
- * throws, so a malformed-authority URL travels all the way to libcurl and is
- * answered with libcurl's own returned error code (e.g. `CURLE_URL_MALFORMAT`)
- * rather than being rejected client-side.
+ * `new URL()` throws on an authority defect, which would turn an otherwise
+ * deliverable scanner request into `ERR_INVALID_URL` before it reaches libcurl.
+ * This parser only slices strings, so such a URL travels on and libcurl answers
+ * it (e.g. `CURLE_URL_MALFORMAT`).
  *
- * Design decisions:
- * - **D3 — hostname normalisation.** {@link TargetUrlParts.hostname} is
- *   raw-lowercased with NO IDNA/punycode conversion. This differs from the old
- *   WHATWG path for internationalised domains: `☃.net` stays `☃.net` (lowercased)
- *   instead of becoming `xn--n3h.net`. Virtual-script and proxy-domain matching
- *   therefore key on the raw hostname. Intentional; documented behaviour change.
- * - **D4 — unparseable authority means "skip".** When the URL has no authority,
- *   {@link TargetUrlParts.hostname} is `undefined`; consumers treat that as "no
- *   virtual script, no response script, no proxy, no Kerberos" rather than
- *   coercing a `null`/`undefined` hostname into the string `"null"` inside a
- *   `RegExp.test(...)`.
+ * `hostname` is lowercased without IDNA/punycode conversion: `☃.net` stays
+ * `☃.net`, not `xn--n3h.net`. Virtual-script and proxy-domain matching key on
+ * the raw hostname.
  *
- * The parser performs only string slicing — no `new URL`, no `node:url` `parse`.
- * The {@link TargetUrlParts.path} field preserves the raw path+query+hash with
- * no percent-encoding normalisation, because libcurl is driven with
- * `PATH_AS_IS` and every scanner-controlled path malformation must survive
- * byte-for-byte.
+ * `hostname` is `undefined` when there is no authority; consumers then skip
+ * host-keyed behaviour instead of matching the string `"null"` against a regex.
+ *
+ * `path` is kept byte-for-byte because libcurl runs with `PATH_AS_IS`.
  */
 export interface TargetUrlParts {
   /** Scheme WITH its trailing colon, e.g. `'http:'`; `undefined` when absent. */
   readonly scheme?: string;
   /** `hostname[:port]` as `configureCurl` needs it; `undefined` when absent. */
   readonly host?: string;
-  /**
-   * Lowercased hostname with no port, no IPv6 brackets, and no IDNA/punycode
-   * normalisation (decision D3); `undefined` when no authority is present (D4).
-   */
+  /** Lowercased hostname without port or IPv6 brackets; no IDNA conversion. */
   readonly hostname?: string;
   /** `user:pass` userinfo for libcurl `USERPWD`; `undefined` when absent. */
   readonly userinfo?: string;
@@ -59,9 +41,7 @@ export class TargetUrl {
 
     const separatorIndex = url.indexOf(TargetUrl.SCHEME_SEPARATOR);
 
-    // Origin-form (no scheme://): there is no authority to decompose. Only the
-    // path is meaningful; hostname stays undefined so consumers skip host-keyed
-    // behaviour (D4).
+    // Origin-form target: no authority, so hostname stays undefined.
     if (separatorIndex === -1) {
       return { path };
     }
@@ -135,10 +115,7 @@ export class TargetUrl {
     };
   }
 
-  /**
-   * Strip the port and IPv6 brackets from a `host` and lowercase it, with no
-   * IDNA/punycode conversion (D3).
-   */
+  /** Strips port and IPv6 brackets and lowercases, without IDNA conversion. */
   private static extractHostname(host: string): string {
     // Bracketed IPv6 literal: `[::1]` or `[::1]:8080`.
     if (host.startsWith('[')) {

@@ -390,7 +390,7 @@ export class HttpRequestExecutor implements RequestExecutor {
   private resolveProxy(options: Request): string | undefined {
     const { hostname } = TargetUrl.parse(options.url);
 
-    // No resolvable authority (D4): make no proxy decision keyed on a host that
+    // No resolvable authority: make no proxy decision keyed on a host that
     // does not exist, rather than coercing undefined into the string 'null'
     // inside RegExp.test.
     if (hostname === undefined) {
@@ -429,7 +429,7 @@ export class HttpRequestExecutor implements RequestExecutor {
 
     const { hostname } = TargetUrl.parse(options.url);
 
-    // No resolvable authority (D4): no host to match a Kerberos domain against.
+    // No resolvable authority: no host to match a Kerberos domain against.
     if (hostname === undefined) {
       return false;
     }
@@ -561,9 +561,7 @@ export class HttpRequestExecutor implements RequestExecutor {
   private async transformScript(script: Request): Promise<Request> {
     const { hostname } = TargetUrl.parse(script.url);
 
-    // No resolvable authority (D4): no host to match a virtual script against,
-    // and — crucially — no throwing `new URL()` to short-circuit an otherwise
-    // deliverable request before it reaches libcurl (Finding A).
+    // No resolvable authority: no host to match a virtual script against.
     if (hostname === undefined) {
       return script;
     }
@@ -615,7 +613,7 @@ export class HttpRequestExecutor implements RequestExecutor {
   ): Promise<Response> {
     const { hostname } = TargetUrl.parse(request.url);
 
-    // No resolvable authority (D4): no host to match a response script against.
+    // No resolvable authority: no host to match a response script against.
     if (hostname === undefined) {
       return response;
     }

@@ -38,8 +38,6 @@ describe('ServerRepeaterLauncher', () => {
   const requestExecutorOptionsMock = mock<RequestExecutorOptions>();
   const cliInfoMock = mock<CliInfo>();
 
-  // A fake RepeaterServer that records the handlers subscribeToEvents registers,
-  // so the captured REQUEST handler can be driven directly.
   const handlers = new Map<string, RepeaterServerEventHandler<never>>();
   const repeaterServer: RepeaterServer = {
     disconnect: (): void => undefined,
@@ -82,7 +80,6 @@ describe('ServerRepeaterLauncher', () => {
       instance(cliInfoMock)
     );
 
-    // run() wires subscribeToEvents, registering the REQUEST handler.
     await sut.run('repeater-1');
   });
 
@@ -101,8 +98,7 @@ describe('ServerRepeaterLauncher', () => {
       } as unknown as Response);
 
     it('should ack with a protocol error when the request payload cannot be constructed', async () => {
-      // arrange — a URL the Request constructor still rejects post-relaxation
-      // (blank after trim).
+      // arrange
       const event: RepeaterServerRequestEvent = {
         protocol: Protocol.HTTP,
         url: ''
@@ -136,8 +132,7 @@ describe('ServerRepeaterLauncher', () => {
     });
 
     it('should ack with message and errorCode when execution itself fails', async () => {
-      // arrange — a constructible request whose execution fails is a distinct
-      // error class from a malformed payload.
+      // arrange
       when(commandHubMock.sendRequest(anything())).thenResolve({
         protocol: Protocol.HTTP,
         message: 'Connection refused',
@@ -189,7 +184,7 @@ describe('ServerRepeaterLauncher', () => {
       // act
       await requestHandler()(event);
 
-      // assert — a rejected payload is a logger.error, never a Sentry event.
+      // assert
       expect(captureException).not.toHaveBeenCalled();
       expect(loggerErrorSpy).toHaveBeenCalled();
     });

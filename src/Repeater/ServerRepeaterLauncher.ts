@@ -251,12 +251,8 @@ export class ServerRepeaterLauncher implements RepeaterLauncher {
       request = new Request({ ...event });
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
-      // A malformed request payload the bridge sent that we cannot dispatch.
-      // Answer the ack with a protocol error so the bridge can classify it as a
-      // bridge<->repeater contract failure — distinct from an execution failure,
-      // which returns the { message, errorCode } variant below. logger.error
-      // only, NOT captureException: the whole point of this fix is that these
-      // stop being Sentry events.
+      // Scanners deliberately send malformed targets; logged but not sent to
+      // Sentry to avoid noise.
       logger.error('Rejecting a malformed request from the bridge: %s', reason);
 
       return {

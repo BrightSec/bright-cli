@@ -7,8 +7,7 @@
  * This parser only slices strings, so such a URL travels on and libcurl answers
  * it (e.g. `CURLE_URL_MALFORMAT`).
  *
- * `hostname` is lowercased without IDNA/punycode conversion: `☃.net` stays
- * `☃.net`, not `xn--n3h.net`. Virtual-script and proxy-domain matching key on
+ * `hostname` is lowercased without IDNA/punycode conversion. Virtual-script and proxy-domain matching key on
  * the raw hostname.
  *
  * `hostname` is `undefined` when there is no authority; consumers then skip

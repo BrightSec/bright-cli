@@ -10,6 +10,7 @@ import { CertificatesResolver } from './CertificatesResolver';
 import { CurlSeekResult } from './CurlSeekResult';
 import { CurlSeekOrigin } from './CurlSeekOrigin';
 import { CurlErrorMapper } from './CurlErrorMapper';
+import { CurlHeadersParser } from './CurlHeadersParser';
 import { inject, injectable } from 'tsyringe';
 import iconv from 'iconv-lite';
 import { safeParse } from 'fast-content-type-parse';
@@ -18,7 +19,6 @@ import {
   CurlAuth,
   CurlFeature,
   CurlGssApi,
-  HeaderInfo,
   Multi
 } from '@brightsec/node-libcurl';
 import { parse as parseUrl } from 'node:url';
@@ -148,11 +148,11 @@ export class HttpRequestExecutor implements RequestExecutor {
 
       curl.on(
         'end',
-        (statusCode: number, rawBody: Buffer, rawHeaders: HeaderInfo[]) => {
+        (statusCode: number, rawBody: Buffer, rawHeaders: Buffer) => {
           const ttfbUs = curl.getInfo('STARTTRANSFER_TIME_T') as number;
           const ttfb = Math.round(ttfbUs / 1000);
 
-          const headers = this.parseCurlHeaders(rawHeaders);
+          const headers = CurlHeadersParser.parse(rawHeaders);
 
           setImmediate(() => curl.close());
 
@@ -184,6 +184,7 @@ export class HttpRequestExecutor implements RequestExecutor {
 
   private configureCurl(curl: Curl, options: Request): void {
     curl.enable(CurlFeature.NoDataParsing);
+    curl.enable(CurlFeature.NoHeaderParsing);
 
     const { protocol, host, auth } = parseUrl(options.url);
     curl.setOpt('URL', `${protocol}//${host}`);
@@ -388,21 +389,6 @@ export class HttpRequestExecutor implements RequestExecutor {
     }
 
     return lines;
-  }
-
-  private parseCurlHeaders(
-    rawHeaders: HeaderInfo[]
-  ): Record<string, string | string[]> {
-    const lastHeaders = rawHeaders[rawHeaders.length - 1] ?? {};
-    const result: Record<string, string | string[]> = {};
-
-    for (const [key, val] of Object.entries(lastHeaders)) {
-      if (key === 'result') continue;
-
-      result[key.toLowerCase()] = val as string;
-    }
-
-    return result;
   }
 
   private resolveProxy(options: Request): string | undefined {

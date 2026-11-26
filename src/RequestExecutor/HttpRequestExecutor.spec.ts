@@ -17,7 +17,10 @@ import {
   when
 } from 'ts-mockito';
 import { Curl } from '@brightsec/node-libcurl';
+import forge from 'node-forge';
+import iconv from 'iconv-lite';
 import http from 'node:http';
+import http2 from 'node:http2';
 import { once } from 'node:events';
 import net, { AddressInfo } from 'node:net';
 import { promisify } from 'node:util';
@@ -50,6 +53,29 @@ const WARMUP_REQUESTS = 3;
 const MAX_MEAN_LATENCY_MS = 50;
 
 const serversToClose: http.Server[] = [];
+
+// Generated per run instead of committed: a checked-in private key, even a
+// throwaway one, trips secret scanners. 2048-bit RSA because OpenSSL's default
+// security level rejects shorter keys. The executor disables peer
+// verification, so trust is irrelevant.
+const createTestTlsCredentials = (): { key: string; cert: string } => {
+  const { privateKey, publicKey } = forge.pki.rsa.generateKeyPair(2048);
+  const cert = forge.pki.createCertificate();
+  const subject = [{ name: 'commonName', value: '127.0.0.1' }];
+
+  cert.publicKey = publicKey;
+  cert.serialNumber = '01';
+  cert.validity.notBefore = new Date(Date.now() - 60_000);
+  cert.validity.notAfter = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  cert.setSubject(subject);
+  cert.setIssuer(subject);
+  cert.sign(privateKey, forge.md.sha256.create());
+
+  return {
+    key: forge.pki.privateKeyToPem(privateKey),
+    cert: forge.pki.certificateToPem(cert)
+  };
+};
 
 async function startServer(
   handler?: (req: http.IncomingMessage, res: http.ServerResponse) => void
@@ -2286,5 +2312,119 @@ describe('HttpRequestExecutor', () => {
         withinBudget: mean < MAX_MEAN_LATENCY_MS
       }).toEqual(expect.objectContaining({ withinBudget: true }));
     }, 60000);
+
+    const expectWellFormed = (headers: Record<string, string | string[]>) => {
+      for (const [name, value] of Object.entries(headers)) {
+        expect(name).not.toMatch(/[:\s]/);
+        for (const v of Array.isArray(value) ? value : [value]) {
+          expect(typeof v).toBe('string');
+        }
+      }
+    };
+
+    it('should deliver empty header values from an HTTP/1.1 target as empty strings', async () => {
+      // arrange
+      const server = net.createServer((socket) =>
+        socket.on('data', () => {
+          socket.write(
+            'HTTP/1.1 200 OK\r\nexpires:\r\ncache-control: \r\npragma:\r\nx-nospace:value\r\nx-padded:   value  \r\nlink: <a>\r\nlink: <b>\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+          );
+          socket.end();
+        })
+      );
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const { port } = server.address() as AddressInfo;
+      const { request } = createRequest({ url: `http://127.0.0.1:${port}/` });
+      const sut = buildSut({ timeout: 5000 });
+
+      try {
+        // act
+        const response = await sut.execute(request);
+
+        // assert
+        expect(response.headers).toMatchObject({
+          'expires': '',
+          'cache-control': '',
+          'pragma': '',
+          'x-nospace': 'value',
+          'x-padded': 'value',
+          'link': ['<a>', '<b>']
+        });
+        expectWellFormed(response.headers ?? {});
+      } finally {
+        server.close();
+      }
+    });
+
+    it('should decode the body with the charset of a duplicated content-type header', async () => {
+      // arrange
+      const body = iconv.encode('Привет', 'windows-1251');
+      const server = net.createServer((socket) =>
+        socket.on('data', () => {
+          socket.write(
+            `HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=windows-1251\r\nContent-Type: text/html; charset=windows-1251\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`
+          );
+          socket.end(body);
+        })
+      );
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const { port } = server.address() as AddressInfo;
+      const { request } = createRequest({ url: `http://127.0.0.1:${port}/` });
+      const sut = buildSut({ timeout: 5000 });
+
+      try {
+        // act
+        const response = await sut.execute(request);
+
+        // assert
+        expect(response.headers?.['content-type']).toBe(
+          'text/html; charset=windows-1251'
+        );
+        expect(response.body).toBe('Привет');
+      } finally {
+        server.close();
+      }
+    });
+
+    it('should deliver empty header values from an HTTP/2 TLS target as empty strings', async () => {
+      // arrange
+      const server = http2.createSecureServer(createTestTlsCredentials());
+      server.on('stream', (stream) => {
+        stream.respond({
+          ':status': 200,
+          'expires': '',
+          'cache-control': '',
+          'pragma': '',
+          'set-cookie': ['a=1; Path=/', 'b=2']
+        });
+        stream.end();
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const { port } = server.address() as AddressInfo;
+      const { request } = createRequest({
+        url: `https://127.0.0.1:${port}/`
+      });
+      const sut = buildSut({ timeout: 5000 });
+
+      try {
+        // act
+        const response = await sut.execute(request);
+
+        // assert
+        expect(response.statusCode).toBe(200);
+        expect(response.headers).toMatchObject({
+          'expires': '',
+          'cache-control': '',
+          'pragma': '',
+          'set-cookie': ['a=1; Path=/', 'b=2']
+        });
+        expectWellFormed(response.headers ?? {});
+      } finally {
+        server.close();
+      }
+    });
   });
 });

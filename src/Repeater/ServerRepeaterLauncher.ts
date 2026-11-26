@@ -245,9 +245,26 @@ export class ServerRepeaterLauncher implements RepeaterLauncher {
   private requestReceived = async (
     event: RepeaterServerRequestEvent
   ): Promise<RepeaterServerRequestResponse> => {
-    const response = await this.commandHub.sendRequest(
-      new Request({ ...event })
-    );
+    let request: Request;
+
+    try {
+      request = new Request({ ...event });
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      // Scanners deliberately send malformed targets; logged but not sent to
+      // Sentry to avoid noise.
+      logger.error('Rejecting a malformed request from the bridge: %s', reason);
+
+      return {
+        protocol: event.protocol,
+        protocolError: {
+          code: RepeaterErrorCodes.MALFORMED_REQUEST,
+          message: reason
+        }
+      };
+    }
+
+    const response = await this.commandHub.sendRequest(request);
 
     const {
       statusCode,

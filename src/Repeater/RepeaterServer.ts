@@ -52,6 +52,12 @@ export type RepeaterServerRequestResponse =
       protocol: Protocol;
       message?: string;
       errorCode?: string;
+    }
+  | {
+      // The payload could not be turned into a Request. Unlike the
+      // { message, errorCode } variant, this is not a target-side failure.
+      protocol: Protocol;
+      protocolError: { code: RepeaterErrorCodes; message: string };
     };
 
 export interface RepeaterServerReconnectionFailedEvent {
@@ -68,6 +74,9 @@ export enum RepeaterErrorCodes {
   REPEATER_DEACTIVATED = 'repeater_deactivated',
   REPEATER_UNAUTHORIZED = 'repeater_unauthorized',
   REPEATER_NO_LONGER_SUPPORTED = 'repeater_no_longer_supported',
+  // Sent on the per-request `protocolError` ack, not the deploy-time `error`
+  // event, so it never trips isCriticalError.
+  MALFORMED_REQUEST = 'malformed_request',
   UNKNOWN_ERROR = 'unknown_error',
   UNEXPECTED_ERROR = 'unexpected_error'
 }

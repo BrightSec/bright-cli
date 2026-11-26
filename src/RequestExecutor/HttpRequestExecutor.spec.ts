@@ -2287,4 +2287,66 @@ describe('HttpRequestExecutor', () => {
       }).toEqual(expect.objectContaining({ withinBudget: true }));
     }, 60000);
   });
+
+  // Pins the libcurl behaviour on the supported runtime (engines: >=22 <=24).
+  describe('execute', () => {
+    // Redefines the readonly url on a valid request to bypass the blank-url
+    // check in the constructor.
+    const malformedRequest = (url: string): Request => {
+      const request = new Request({
+        url: 'http://placeholder.invalid/',
+        protocol: Protocol.HTTP
+      });
+      Object.defineProperty(request, 'url', { value: url, writable: false });
+
+      return request;
+    };
+
+    // libcurl rejects each malformed authority as CURLE_URL_MALFORMAT. What
+    // matters is that execute returns this failure rather than throwing,
+    // hanging, or short-circuiting with ERR_INVALID_URL.
+    const CURL_MALFORMAT_MESSAGE =
+      'Request failed: URL using bad/illegal format or missing URL';
+
+    const cases: [name: string, url: string][] = [
+      ['non-numeric port', 'http://host.invalid:notaport/'],
+      ['port > 65535', 'http://host.invalid:99999/'],
+      ['unbracketed IPv6', 'http://::1/'],
+      ['space in host', 'http://ho st.invalid/'],
+      ['[not-ipv6]', 'http://[not-ipv6]/'],
+      ['empty string', '']
+    ];
+
+    it.each(cases)(
+      'should reach libcurl and return a defined error for %s (not ERR_INVALID_URL, no throw/hang)',
+      async (_name, url) => {
+        // arrange
+        const sut = buildSut();
+        const request = malformedRequest(url);
+
+        // act
+        const response = await sut.execute(request);
+
+        // assert
+        expect(response.errorCode).toBeDefined();
+        expect(response.errorCode).not.toBe('ERR_INVALID_URL');
+        expect(response.message).toBe(CURL_MALFORMAT_MESSAGE);
+      },
+      10_000
+    );
+
+    it('should short-circuit an empty authority without reaching a virtual script', async () => {
+      // arrange — an origin-form target has no hostname, so no virtual script
+      // lookup is attempted.
+      const sut = buildSut();
+      const request = malformedRequest('/origin-form-only');
+
+      // act
+      const response = await sut.execute(request);
+
+      // assert
+      expect(response).toBeDefined();
+      verify(virtualScriptsMock.find(anything())).never();
+    });
+  });
 });

@@ -139,6 +139,76 @@ describe('Request', () => {
   });
 
   describe('constructor', () => {
+    // The six authority shapes the WHATWG parser (old new URL() predicate)
+    // rejected. bridges accepts them and dispatches them, so the CLI must too —
+    // they now construct successfully and are answered by libcurl downstream.
+    const previouslyRejected = [
+      'http://host:notaport/',
+      'http://host:99999/',
+      'http://::1/',
+      'http://ho st/',
+      'http://[not-ipv6]/',
+      'http://user@host name/'
+    ];
+
+    it.each(previouslyRejected)(
+      'should accept the previously-rejected authority shape %s',
+      (url) => {
+        expect(
+          () => new Request({ url, protocol: Protocol.HTTP })
+        ).not.toThrow();
+      }
+    );
+
+    it('should trim and store the url', () => {
+      const request = new Request({
+        url: '  http://foo.bar/x  ',
+        protocol: Protocol.HTTP
+      });
+
+      expect(request.url).toBe('http://foo.bar/x');
+    });
+
+    it('should still reject an empty url', () => {
+      expect(() => new Request({ url: '', protocol: Protocol.HTTP })).toThrow(
+        /Invalid URL/
+      );
+    });
+
+    it('should still reject a whitespace-only url', () => {
+      expect(
+        () => new Request({ url: '   ', protocol: Protocol.HTTP })
+      ).toThrow(/Invalid URL/);
+    });
+
+    it('should carry the offending value on the rejection message', () => {
+      // A blank url is the only surviving rejection; its (empty) value is named.
+      expect(() => new Request({ url: '', protocol: Protocol.HTTP })).toThrow(
+        'Invalid URL: '
+      );
+    });
+
+    it('should build the rejection message through the userinfo-redacting formatter', () => {
+      // The only surviving rejection is a blank-after-trim url, so the offending
+      // value is empty here; the credential-redaction guarantee itself is proven
+      // in TargetUrl.spec (redact). This pins that the message is produced via
+      // that redacting formatter rather than interpolating a raw url, so a
+      // future non-blank rejection could never leak userinfo to Sentry.
+      expect(() => new Request({ url: '', protocol: Protocol.HTTP })).toThrow(
+        'Invalid URL: '
+      );
+    });
+
+    it('should accept a credentialed url without leaking it (no rejection path)', () => {
+      expect(
+        () =>
+          new Request({
+            url: 'http://user:pass@host/',
+            protocol: Protocol.HTTP
+          })
+      ).not.toThrow();
+    });
+
     // The trace id must never reach the target. bridges carries it as a `traceId`
     // DTO field, and the guarantee that an old repeater cannot leak it rests on
     // this constructor's FIXED destructured param list — an unknown key is

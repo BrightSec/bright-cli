@@ -1,5 +1,6 @@
 import { logger } from '../Utils';
 import { Protocol } from './Protocol';
+import { TargetUrl } from './TargetUrl';
 import { readFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import { createSecureContext } from 'node:tls';
@@ -109,7 +110,7 @@ export class Request {
     this.protocol = protocol;
     this._method = method?.toUpperCase() ?? 'GET';
 
-    this.validateUrl(url);
+    this.assertUrlNotBlank(url);
     this.url = url.trim();
 
     this.precheckBody(body);
@@ -209,11 +210,9 @@ export class Request {
     };
   }
 
-  private validateUrl(url: string): void {
-    try {
-      new URL(url);
-    } catch {
-      throw new Error('Invalid URL.');
+  private assertUrlNotBlank(url: string | undefined): void {
+    if (!url?.trim()) {
+      throw new Error(`Invalid URL: ${TargetUrl.redact(url ?? '')}`);
     }
   }
 

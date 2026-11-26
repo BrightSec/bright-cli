@@ -9,6 +9,7 @@ import { CertificatesCache } from './CertificatesCache';
 import { CertificatesResolver } from './CertificatesResolver';
 import { CurlSeekResult } from './CurlSeekResult';
 import { CurlSeekOrigin } from './CurlSeekOrigin';
+import { TargetUrl } from './TargetUrl';
 import { CurlErrorMapper } from './CurlErrorMapper';
 import { inject, injectable } from 'tsyringe';
 import iconv from 'iconv-lite';
@@ -21,7 +22,6 @@ import {
   HeaderInfo,
   Multi
 } from '@brightsec/node-libcurl';
-import { parse as parseUrl } from 'node:url';
 
 type ScriptEntrypoint = (
   options: RequestOptions
@@ -185,15 +185,14 @@ export class HttpRequestExecutor implements RequestExecutor {
   private configureCurl(curl: Curl, options: Request): void {
     curl.enable(CurlFeature.NoDataParsing);
 
-    const { protocol, host, auth } = parseUrl(options.url);
-    curl.setOpt('URL', `${protocol}//${host}`);
+    const parts = TargetUrl.parse(options.url);
+    curl.setOpt('URL', `${parts.scheme ?? ''}//${parts.host ?? ''}`);
 
-    if (auth) {
-      curl.setOpt('USERPWD', auth);
+    if (parts.userinfo) {
+      curl.setOpt('USERPWD', parts.userinfo);
     }
 
-    const rawPath = this.buildRawPath(options.url);
-    curl.setOpt('REQUEST_TARGET', rawPath);
+    curl.setOpt('REQUEST_TARGET', parts.path);
     // Prevent libcurl from normalising (percent-encoding) the path.
     curl.setOpt('PATH_AS_IS', true);
     curl.setOpt('SSL_VERIFYPEER', false);
@@ -224,23 +223,6 @@ export class HttpRequestExecutor implements RequestExecutor {
 
     curl.setOpt('NOBODY', options.method === 'HEAD');
     curl.setOpt('CUSTOMREQUEST', options.method);
-  }
-
-  /**
-   * Extracts the raw path+query+hash from a URL string without any
-   * percent-encoding normalisation.
-   */
-  private buildRawPath(url: string): string {
-    const separatorIndex = url.indexOf('://');
-    const withoutProtocol =
-      separatorIndex === -1 ? url : url.slice(separatorIndex + 3);
-    const pathStart = withoutProtocol.search(/[/?#]/);
-
-    if (pathStart === -1) return '/';
-
-    return withoutProtocol[pathStart] === '/'
-      ? withoutProtocol.slice(pathStart)
-      : `/${withoutProtocol.slice(pathStart)}`;
   }
 
   private applyCurlBody(curl: Curl, options: Request): void {
@@ -406,7 +388,14 @@ export class HttpRequestExecutor implements RequestExecutor {
   }
 
   private resolveProxy(options: Request): string | undefined {
-    const hostname = parseUrl(options.url).hostname;
+    const { hostname } = TargetUrl.parse(options.url);
+
+    // No resolvable authority: make no proxy decision keyed on a host that
+    // does not exist, rather than coercing undefined into the string 'null'
+    // inside RegExp.test.
+    if (hostname === undefined) {
+      return this.options.proxyUrl;
+    }
 
     if (
       this.proxyDomains &&
@@ -438,7 +427,12 @@ export class HttpRequestExecutor implements RequestExecutor {
       return true;
     }
 
-    const hostname = parseUrl(options.url).hostname;
+    const { hostname } = TargetUrl.parse(options.url);
+
+    // No resolvable authority: no host to match a Kerberos domain against.
+    if (hostname === undefined) {
+      return false;
+    }
 
     return this.kerberosDomains.some((domain) => domain.test(hostname));
   }
@@ -565,7 +559,12 @@ export class HttpRequestExecutor implements RequestExecutor {
   }
 
   private async transformScript(script: Request): Promise<Request> {
-    const { hostname } = new URL(script.url);
+    const { hostname } = TargetUrl.parse(script.url);
+
+    // No resolvable authority: no host to match a virtual script against.
+    if (hostname === undefined) {
+      return script;
+    }
 
     const vm = this.virtualScripts.find(hostname);
 
@@ -612,7 +611,12 @@ export class HttpRequestExecutor implements RequestExecutor {
     request: Request,
     response: Response
   ): Promise<Response> {
-    const { hostname } = new URL(request.url);
+    const { hostname } = TargetUrl.parse(request.url);
+
+    // No resolvable authority: no host to match a response script against.
+    if (hostname === undefined) {
+      return response;
+    }
 
     const vm = this.virtualScripts.find(hostname);
 

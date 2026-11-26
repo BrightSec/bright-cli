@@ -130,6 +130,10 @@ jobs:
 
       - name: Install Dependencies
         uses: ./.github/workflows/composite/npm
+        # Tests only spawn the CLI under test; skipping install scripts avoids
+        # node-libcurl's vcpkg source build, which takes 20+ minutes on Windows.
+        env:
+          npm_config_ignore_scripts: true
         with:
           cache: ''
       
@@ -188,6 +192,8 @@ jobs:
 
       - name: Install Dependencies
         uses: ./.github/workflows/composite/npm
+        env:
+          npm_config_ignore_scripts: true
         with:
           cache: ''
 
@@ -228,6 +234,8 @@ jobs:
 
       - name: Install Dependencies
         uses: ./.github/workflows/composite/npm
+        env:
+          npm_config_ignore_scripts: true
         with:
           cache: ''
 
@@ -325,6 +333,8 @@ jobs:
 
       - name: Install Dependencies
         uses: ./.github/workflows/composite/npm
+        env:
+          npm_config_ignore_scripts: true
         with:
           version: ${{ matrix.node }}
           cache: ''

@@ -18,6 +18,7 @@ import {
   CurlAuth,
   CurlFeature,
   CurlGssApi,
+  CurlHeader,
   HeaderInfo,
   Multi
 } from '@brightsec/node-libcurl';
@@ -220,6 +221,7 @@ export class HttpRequestExecutor implements RequestExecutor {
 
     if (proxyUrl) {
       curl.setOpt('PROXY', proxyUrl);
+      this.applyCurlProxyAttribution(curl, options);
     }
 
     curl.setOpt('NOBODY', options.method === 'HEAD');
@@ -405,6 +407,23 @@ export class HttpRequestExecutor implements RequestExecutor {
     return result;
   }
 
+  private applyCurlProxyAttribution(curl: Curl, options: Request): void {
+    if (!this.options.proxyTargetAttribution) return;
+
+    const headers = Object.entries({
+      'X-Bright-Entrypoint-Id': options.entrypointId,
+      'X-Bright-Scan-Id': options.scanId,
+      'X-Bright-Discovery-Id': options.discoveryId
+    })
+      .filter(([, value]: [string, string | undefined]) => !!value)
+      .map(([name, value]: [string, string]) => `${name}: ${value}`);
+
+    if (!headers.length) return;
+
+    curl.setOpt('HEADEROPT', CurlHeader.Separate);
+    curl.setOpt('PROXYHEADER', headers);
+  }
+
   private resolveProxy(options: Request): string | undefined {
     const hostname = parseUrl(options.url).hostname;
 
@@ -580,10 +599,13 @@ export class HttpRequestExecutor implements RequestExecutor {
       ? iconv.encode(script.body, script.encoding).toString()
       : script.body;
 
+    const { entrypointId, scanId, discoveryId, ...options }: RequestOptions =
+      script.toJSON();
+
     const result = await vm.exec<ScriptEntrypoint>(
       this.DEFAULT_SCRIPT_ENTRYPOINT,
       {
-        ...script.toJSON(),
+        ...options,
         body: decodedBody,
         // The body handed to the script is already decoded, so reporting the
         // original `encoding` would describe it incorrectly. Every other option
@@ -601,11 +623,14 @@ export class HttpRequestExecutor implements RequestExecutor {
       !result?.encoding || result.encoding === script.encoding;
     const restoreOriginalBody = bodyUntouched && encodingUnchanged;
 
-    return new Request(
-      restoreOriginalBody
+    return new Request({
+      ...(restoreOriginalBody
         ? { ...result, body: script.body, encoding: script.encoding }
-        : result
-    );
+        : result),
+      entrypointId,
+      scanId,
+      discoveryId
+    });
   }
 
   private async handleResponseScript(

@@ -15,6 +15,8 @@ export interface RepeaterServerRequestEvent {
   encoding?: 'base64';
   maxContentSize?: number;
   timeout?: number;
+  // Carried as a DTO field by bridges; read for the Sentry tag, never sent to the target.
+  traceId?: string;
 }
 
 export type RepeaterServerNetworkTestEvent =

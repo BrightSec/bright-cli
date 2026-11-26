@@ -10,6 +10,7 @@ import { CertificatesResolver } from './CertificatesResolver';
 import { CurlSeekResult } from './CurlSeekResult';
 import { CurlSeekOrigin } from './CurlSeekOrigin';
 import { TargetUrl } from './TargetUrl';
+import { CurlErrorMapper } from './CurlErrorMapper';
 import { inject, injectable } from 'tsyringe';
 import iconv from 'iconv-lite';
 import { safeParse } from 'fast-content-type-parse';
@@ -160,6 +161,19 @@ export class HttpRequestExecutor implements RequestExecutor {
       );
 
       curl.on('error', (err: Error) => {
+        // libcurl reports failures as a CURLcode rather than the Node.js-style
+        // code consumers rely on to classify target failures; normalize it.
+        const curlCode = CurlErrorMapper.resolveCurlCode(err);
+
+        if (curlCode !== undefined) {
+          Object.assign(err, {
+            code: CurlErrorMapper.toErrorCode(
+              curlCode,
+              curl.getInfo('OS_ERRNO') as number
+            )
+          });
+        }
+
         setImmediate(() => curl.close());
         reject(err);
       });
@@ -571,14 +585,18 @@ export class HttpRequestExecutor implements RequestExecutor {
       this.DEFAULT_SCRIPT_ENTRYPOINT,
       {
         ...script.toJSON(),
-        body: decodedBody
+        body: decodedBody,
+        // The body handed to the script is already decoded, so reporting the
+        // original `encoding` would describe it incorrectly. Every other option
+        // round-trips verbatim.
+        encoding: undefined
       }
     );
-    // `toJSON()` does not carry `encoding`, so a script that leaves the body
-    // alone hands it back either undefined or the encoding it was told to use,
-    // and the lossy decoded view is all that is left of the body — restore
-    // both. Only a script that asks for an encoding the request did not already
-    // have is asking for its own body to be decoded, so pass that through.
+    // The script is handed the body already decoded and no `encoding`, so one it
+    // hands back is either absent or its own addition, and the lossy decoded
+    // view is all that is left of the body — restore both. Only a script that
+    // asks for an encoding the request did not already have is asking for its
+    // own body to be decoded, so pass that through.
     const bodyUntouched = !!result && result.body === decodedBody;
     const encodingUnchanged =
       !result?.encoding || result.encoding === script.encoding;

@@ -90,7 +90,7 @@ jobs:
         include:
           - os: windows-2022
             target: win
-          - os: macos-14
+          - os: macos-15
             target: macos
           - os: ubuntu-22.04
             target: linux
@@ -124,6 +124,12 @@ jobs:
 
       - name: Build executable file
         run: npm run build:pkg -- -t node24-${{ matrix.target }}-x64
+
+      # pkg output is a renamed node.exe; rewrite its VERSIONINFO/icon so the
+      # publisher metadata matches the code signing certificate (SmartScreen).
+      - name: Set Windows version info
+        if: startsWith(matrix.os, 'win')
+        run: node .\tools\scripts\set-windows-version-info.mjs .\bin\cli.exe
 
       # DigiCert KeyLocker code signing (Windows only).
       # If the SM_* secrets are not configured (e.g. local re-runs), signing is
@@ -174,6 +180,21 @@ jobs:
         run: .\tools\scripts\sign-windows.ps1 -FilePath .\bin\cli.exe
         shell: pwsh
 
+      # roots.exe (from the win-ca package) is bundled into the MSI, so it is
+      # staged and signed here before build-msi.ps1 packages it.
+      - name: Sign bundled roots.exe
+        if: startsWith(matrix.os, 'win') && steps.signing.outputs.enabled == 'true'
+        env:
+          SM_HOST: ${{ vars.SM_HOST }}
+          SM_API_KEY: ${{ secrets.SM_API_KEY }}
+          SM_CLIENT_CERT_FILE: ${{ runner.temp }}/client-auth-cert.p12
+          SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
+          SM_CODE_SIGNING_CERT_SHA1_HASH: ${{ secrets.SM_CODE_SIGNING_CERT_SHA1_HASH }}
+        run: |
+          Copy-Item .\node_modules\win-ca\lib\roots.exe -Destination .\bin\roots.exe
+          .\tools\scripts\sign-windows.ps1 -FilePath .\bin\roots.exe
+        shell: pwsh
+
       - name: Build MSI
         if: startsWith(matrix.os, 'win')
         run: .\tools\scripts\build-msi.ps1
@@ -216,7 +237,7 @@ jobs:
           if [[ "${{ matrix.os }}" == "windows-2022" ]]; then
             certutil -hashfile ./bin/cli.exe SHA256 | grep -v "CertUtil" | sed 's/SHA256 hash of .*://' | tr -d " \t\n\r" > checksum.txt
             certutil -hashfile ./bin/bright-cli.msi SHA256 | grep -v "CertUtil" | sed 's/SHA256 hash of .*://' | tr -d " \t\n\r" > checksum.msi.txt
-          elif [[ "${{ matrix.os }}" == "macos-14" ]]; then
+          elif [[ "${{ matrix.os }}" == "macos-15" ]]; then
             shasum -a 256 ./bin/cli | cut -d' ' -f1 > checksum.txt
           else
             sha256sum ./bin/cli | cut -d' ' -f1 > checksum.txt
@@ -277,18 +298,14 @@ jobs:
         with:
           name: build
 
-        # The scope does not align with the package name
-        # FIXME: once GitHub organization name has been changed, we should prevent this behavior
       - name: Prepare GPR package
-        run: |
-          npm pkg set name='@neuralegion/bright-cli' \
-            && npm pkg set brightCli.distribution=gpr
+        run: npm pkg set brightCli.distribution=gpr
 
       - name: Setup node
         uses: ./.github/workflows/composite/npm
         with:
           registry: 'https://npm.pkg.github.com'
-          scope: '@NeuraLegion'
+          scope: '@brightsec'
 
       - run: npm publish --tag ${{ needs.resolve-tag.outputs.tag }}
         env:

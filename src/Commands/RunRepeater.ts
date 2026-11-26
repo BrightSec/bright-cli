@@ -38,11 +38,13 @@ export class RunRepeater implements CommandModule {
         }
       })
       .option('timeout', {
-        number: true,
         requiresArg: true,
         default: 30000,
         describe:
-          'Time to wait for a server to send response headers (and start the response body) before aborting the request.'
+          'Time to wait for a server to send response headers (and start the response body) before aborting the request, in milliseconds or a duration string (e.g. 30s, 1m).',
+        // Without its own coerce, yargs applies the global seconds-based
+        // --timeout coercion to this millisecond default.
+        coerce: (arg: string | number) => Helpers.parseDuration(arg, 'ms')
       })
       .option('header', {
         alias: 'H',

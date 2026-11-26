@@ -19,19 +19,66 @@ jobs:
       - name: Install deps
         uses: ./.github/workflows/composite/npm
 
-  test:
+  # Real work matrix. Runs each target across every supported Node.js major.
+  # Its check-run names (e.g. `unit (24, build)`, `unit (26, test:unit)`) are
+  # deliberately NOT the required contexts, because they change whenever the
+  # matrix axes change. The stable `test (<target>)` aggregation jobs below are
+  # what branch protection requires.
+  unit:
     runs-on: ubuntu-latest
     needs: install-deps
     strategy:
       fail-fast: false
       matrix:
-        target: [ 'lint', 'format', 'test:unit', 'build' ]
+        # Track the latest release of each supported major rather than a pinned
+        # patch. Keep the majors in sync with the npm leg of test-cli.yml.
+        node: ['24', '26']
+        target: ['lint', 'format', 'test:unit', 'build']
+        # lint / format / build are runtime-agnostic, so only the test target is
+        # worth running across every supported runtime.
+        exclude:
+          - node: '26'
+            target: 'lint'
+          - node: '26'
+            target: 'format'
+          - node: '26'
+            target: 'build'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install deps
         uses: ./.github/workflows/composite/npm
+        with:
+          version: ${{ matrix.node }}
 
-      - name: Execute ${{ matrix.target }} npm script
+      - name: Execute ${{ matrix.target }} npm script (Node.js ${{ matrix.node }})
         run: npm run ${{ matrix.target }} -- $JEST_ARGUMENTS
+
+  # Stable required-status aggregation. This job is named `test` and carries a
+  # single `target` matrix axis, so its check runs render to exactly
+  # `test (build)`, `test (format)`, `test (lint)`, `test (test:unit)` — the
+  # contexts required by branch protection. Because the name depends only on
+  # `target` (never on the Node.js version), these contexts survive any
+  # reconfiguration of the runtime axis in the `unit` matrix above.
+  #
+  # All four legs key off the aggregate result of the `unit` matrix, so if any
+  # `unit` leg fails or is cancelled, every required `test (<target>)` context
+  # fails and the PR is blocked. (The legs are not independent per target — the
+  # per-target split exists only to reproduce the four required context names.)
+  test:
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    needs: unit
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ['lint', 'format', 'test:unit', 'build']
+    steps:
+      - name: Verify the `unit` matrix succeeded
+        run: |
+          if [ "${{ needs.unit.result }}" != "success" ]; then
+            echo "The 'unit' matrix did not succeed (result: ${{ needs.unit.result }}); failing required context 'test (${{ matrix.target }})'."
+            exit 1
+          fi
+          echo "The 'unit' matrix succeeded; required context 'test (${{ matrix.target }})' is satisfied."

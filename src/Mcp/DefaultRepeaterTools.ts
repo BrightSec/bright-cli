@@ -59,9 +59,10 @@ export class DefaultRepeaterTools implements RepeaterTools {
   private readonly processes = new Map<string, RepeaterProcessEntry>();
 
   constructor(
-    @inject(RepeaterRunCommandOptions) options: RepeaterRunCommandOptions
+    @inject(RepeaterRunCommandOptions)
+    private readonly options: RepeaterRunCommandOptions
   ) {
-    this.startupGraceMs = options.startupGraceMs ?? 500;
+    this.startupGraceMs = this.options.startupGraceMs ?? 500;
   }
 
   public async run(

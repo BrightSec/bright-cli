@@ -48,6 +48,65 @@ describe('Request', () => {
     );
   });
 
+  describe('toJSON', () => {
+    it('should round-trip every option the constructor accepts', () => {
+      // arrange
+      const options = {
+        protocol: Protocol.HTTP,
+        url: 'http://foo.bar/',
+        method: 'POST',
+        headers: { 'x-key': 'value' },
+        body: 'AAAA',
+        passphrase: 'pass',
+        correlationIdRegex: 'x-correlation-id',
+        encoding: 'base64' as const,
+        maxContentSize: 99,
+        timeout: 1234,
+        decompress: false,
+        keepAlive: true
+      };
+      const request = new Request(options);
+
+      // act
+      const copy = new Request(request.toJSON());
+
+      // assert
+      expect(copy).toEqual(
+        expect.objectContaining({
+          protocol: options.protocol,
+          url: options.url,
+          method: options.method,
+          body: options.body,
+          passphrase: options.passphrase,
+          encoding: options.encoding,
+          maxContentSize: options.maxContentSize,
+          timeout: options.timeout,
+          decompress: options.decompress,
+          keepAlive: options.keepAlive
+        })
+      );
+      expect(copy.headers).toEqual(options.headers);
+      expect(copy.correlationIdRegex).toEqual(request.correlationIdRegex);
+    });
+
+    it('should preserve an explicit decompress: false rather than defaulting it back to true', () => {
+      // arrange
+      // `decompress` defaults to `true` in the constructor, so omitting it from
+      // `toJSON()` silently flips it instead of merely dropping it.
+      const request = new Request({
+        protocol: Protocol.HTTP,
+        url: 'http://foo.bar/',
+        decompress: false
+      });
+
+      // act
+      const copy = new Request(request.toJSON());
+
+      // assert
+      expect(copy.decompress).toBe(false);
+    });
+  });
+
   describe('setHeaders', () => {
     it('should append headers', () => {
       const request = new Request({
@@ -148,6 +207,26 @@ describe('Request', () => {
             protocol: Protocol.HTTP
           })
       ).not.toThrow();
+    });
+
+    // The trace id must never reach the target. bridges carries it as a `traceId`
+    // DTO field, and the guarantee that an old repeater cannot leak it rests on
+    // this constructor's FIXED destructured param list — an unknown key is
+    // discarded, never copied into `headers`. If a future refactor switches to
+    // `Object.assign(this, opts)` or a `...rest` capture, this test must fail
+    // loudly rather than silently reintroduce the leak.
+    it('should discard an unknown traceId option and never place it in headers', () => {
+      const request = new Request({
+        url: 'http://foo.bar',
+        protocol: Protocol.HTTP,
+        headers: { 'x-key': 'value' },
+        // cast: `traceId` is not part of RequestOptions on the cli side by design
+        ...({ traceId: 'trace-abc12345' } as object)
+      });
+
+      expect(request.headers).toEqual({ 'x-key': 'value' });
+      expect(request.headers).not.toHaveProperty('traceId');
+      expect(request.headers).not.toHaveProperty('x-bridge-trace-id');
     });
   });
 });

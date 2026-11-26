@@ -193,5 +193,26 @@ describe('ServerRepeaterLauncher', () => {
       expect(captureException).not.toHaveBeenCalled();
       expect(loggerErrorSpy).toHaveBeenCalled();
     });
+
+    it('should log a reconnecting warning on a reconnection attempt', () => {
+      // arrange
+      const loggerWarnSpy = jest
+        .spyOn(logger, 'warn')
+        .mockImplementation(() => 0);
+
+      // act
+      (
+        handlers.get(RepeaterServerEvents.RECONNECT_ATTEMPT) as (
+          payload: unknown
+        ) => unknown
+      )({ attempt: 2 });
+
+      // assert
+      expect(loggerWarnSpy).toHaveBeenCalledWith(
+        'Reconnecting to Bright cloud (attempt %d)',
+        2
+      );
+      loggerWarnSpy.mockRestore();
+    });
   });
 });

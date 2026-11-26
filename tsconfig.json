@@ -25,7 +25,6 @@
     "useUnknownInCatchVariables": false,
     "noUnusedParameters": true,
     "forceConsistentCasingInFileNames": true,
-    "suppressImplicitAnyIndexErrors": true,
     "allowSyntheticDefaultImports": true,
     "typeRoots": ["node_modules/@types", "typings"]
   },

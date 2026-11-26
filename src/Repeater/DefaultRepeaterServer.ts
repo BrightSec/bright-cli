@@ -22,7 +22,7 @@ import {
 import { inject, injectable } from 'tsyringe';
 import io, { Socket } from 'socket.io-client';
 import parser from 'socket.io-msgpack-parser';
-import { captureException, captureMessage } from '@sentry/node';
+import { captureException, captureMessage, withScope } from '@sentry/node';
 import { EventEmitter, once } from 'node:events';
 
 export interface DefaultRepeaterServerOptions {
@@ -86,8 +86,8 @@ interface SocketEmitEventMap {
 @injectable()
 export class DefaultRepeaterServer implements RepeaterServer {
   private readonly MAX_DEPLOYMENT_TIMEOUT = 60_000;
-  private readonly MIN_RECONNECTION_DELAY = 5_000;
-  private readonly MAX_RECONNECTION_DELAY = 1_000;
+  private readonly MIN_RECONNECTION_DELAY = 1_000;
+  private readonly MAX_RECONNECTION_DELAY = 5_000;
   private readonly events = new EventEmitter();
   private readonly handlerMap = new WeakMap<
     RepeaterServerEventHandler<any>,
@@ -97,6 +97,7 @@ export class DefaultRepeaterServer implements RepeaterServer {
   private connectionTimer?: NodeJS.Timeout;
   private _socket?: Socket<SocketListeningEventMap, SocketEmitEventMap>;
   private connectionAttempts = 0;
+  private disposed = false;
 
   private get socket() {
     if (!this._socket) {
@@ -115,11 +116,17 @@ export class DefaultRepeaterServer implements RepeaterServer {
   ) {}
 
   public disconnect() {
+    // Set before anything else: tearing the socket down synchronously emits
+    // reserved events (`disconnect`, `connect_error`) whose handlers would
+    // otherwise schedule a reconnection against the socket being disposed of.
+    this.disposed = true;
+
     this.events.removeAllListeners();
     this.clearConnectionTimer();
 
     this._socket?.disconnect();
     this._socket?.removeAllListeners();
+    this._socket?.io.removeAllListeners();
     this._socket = undefined;
   }
 
@@ -127,8 +134,11 @@ export class DefaultRepeaterServer implements RepeaterServer {
     options: DeployCommandOptions,
     runtime: DeploymentRuntime
   ): Promise<RepeaterServerDeployedEvent> {
+    // Deferred callbacks must never dereference the socket through the throwing
+    // getter: the socket may be gone by the time they run, and there is no
+    // frame left to catch the error.
     process.nextTick(() =>
-      this.socket.emit(SocketEvents.DEPLOY, options, runtime)
+      this._socket?.emit(SocketEvents.DEPLOY, options, runtime)
     );
 
     const [result]: RepeaterServerDeployedEvent[] = await Promise.race([
@@ -146,6 +156,9 @@ export class DefaultRepeaterServer implements RepeaterServer {
   }
 
   public async connect(hostname: string) {
+    this.disposed = false;
+    this.connectionAttempts = 0;
+
     this._socket = io(this.options.uri, {
       parser,
       path: '/api/ws/v1',
@@ -256,18 +269,22 @@ export class DefaultRepeaterServer implements RepeaterServer {
       data?: Omit<RepeaterServerErrorEvent, 'transaction'>;
     };
 
-    if (data && this.suppressConnectionError(data)) {
+    if (data && this.isTerminalConnectionError(data)) {
+      // Terminal by definition: retrying cannot change the outcome. Consumers
+      // treat these as critical and tear the server down synchronously, so
+      // scheduling a reconnection here would outlive the socket.
       this.events.emit(RepeaterServerEvents.ERROR, {
         ...data,
         message: err.message
       });
+
+      return;
     }
 
-    // Try reconnect in any case.
     this.scheduleReconnection();
   };
 
-  private suppressConnectionError(
+  private isTerminalConnectionError(
     data: Omit<RepeaterServerErrorEvent, 'transaction'>
   ) {
     return [
@@ -277,6 +294,14 @@ export class DefaultRepeaterServer implements RepeaterServer {
   }
 
   private scheduleReconnection() {
+    if (this.disposed) {
+      return;
+    }
+
+    // A single pending attempt at a time: without this, every failed attempt
+    // during an outage leaks another timer that nothing can cancel.
+    this.clearConnectionTimer();
+
     let delay = Math.max(
       this.MIN_RECONNECTION_DELAY * 2 ** this.connectionAttempts,
       this.MIN_RECONNECTION_DELAY
@@ -289,7 +314,9 @@ export class DefaultRepeaterServer implements RepeaterServer {
     this.events.emit(RepeaterServerEvents.RECONNECT_ATTEMPT, {
       attempt: this.connectionAttempts
     } as RepeaterServerReconnectionAttemptedEvent);
-    this.connectionTimer = setTimeout(() => this.socket.connect(), delay);
+    // Intentionally referenced: a pending attempt must keep a long-running
+    // Repeater alive while the network is down.
+    this.connectionTimer = setTimeout(() => this._socket?.connect(), delay);
   }
 
   private async wrapEventListener<TArgs extends TArg[], TArg>(
@@ -297,16 +324,30 @@ export class DefaultRepeaterServer implements RepeaterServer {
     handler: (...payload: TArgs) => unknown,
     ...args: unknown[]
   ) {
-    try {
-      const callback = this.extractLastArgument(args);
+    // Fork a Sentry scope per dispatched event so a per-request `trace_id` tag
+    // applies ONLY to this forward's capture — a global `setTag` would
+    // cross-contaminate concurrent forwards. The scope wraps the whole try/catch
+    // so it also encloses the capture in `handleEventError`.
+    return withScope(async (scope) => {
+      if (event === RepeaterServerEvents.REQUEST) {
+        const traceId = (args[0] as RepeaterServerRequestEvent | undefined)
+          ?.traceId;
+        if (traceId) {
+          scope.setTag('trace_id', traceId);
+        }
+      }
 
-      // eslint-disable-next-line @typescript-eslint/return-await
-      const response = await handler(...(args as TArgs));
+      try {
+        const callback = this.extractLastArgument(args);
 
-      callback?.(response);
-    } catch (err) {
-      this.handleEventError(err, event, args);
-    }
+        // eslint-disable-next-line @typescript-eslint/return-await
+        const response = await handler(...(args as TArgs));
+
+        callback?.(response);
+      } catch (err) {
+        this.handleEventError(err, event, args);
+      }
+    });
   }
 
   private extractLastArgument(args: unknown[]): CallbackFunction | undefined {
@@ -324,6 +365,7 @@ export class DefaultRepeaterServer implements RepeaterServer {
   private clearConnectionTimer() {
     if (this.connectionTimer) {
       clearTimeout(this.connectionTimer);
+      this.connectionTimer = undefined;
     }
   }
 
@@ -339,8 +381,8 @@ export class DefaultRepeaterServer implements RepeaterServer {
     }
 
     // the disconnection was initiated by the server, you need to reconnect manually
-    if (reason === 'io server disconnect') {
-      this.socket.connect();
+    if (reason === 'io server disconnect' && !this.disposed) {
+      this._socket?.connect();
     }
   };
 

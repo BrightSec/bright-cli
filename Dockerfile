@@ -7,8 +7,8 @@ ARG VERSION
 
 LABEL org.opencontainers.image.vendor="Bright Security Inc."
 LABEL org.opencontainers.image.title="Repeater"
-LABEL org.opencontainers.image.source="git@github.com:NeuraLegion/bright-cli.git"
-LABEL org.opencontainers.image.url="https://github.com/NeuraLegion/bright-cli"
+LABEL org.opencontainers.image.source="git@github.com:BrightSec/bright-cli.git"
+LABEL org.opencontainers.image.url="https://github.com/BrightSec/bright-cli"
 LABEL org.opencontainers.image.authors="Artem Derevnjuk <artem.derevnjuk@brightsec.com>"
 LABEL org.opencontainers.image.version="$VERSION"
 

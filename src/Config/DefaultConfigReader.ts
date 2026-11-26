@@ -59,7 +59,7 @@ export class DefaultConfigReader implements ConfigReader {
   public toJSON(): CliConfig {
     return [...this.config.entries()].reduce(
       (acc: CliConfig, [key, value]: [string, unknown]) => {
-        acc[key] = value;
+        (acc as Record<string, unknown>)[key] = value;
 
         return acc;
       },

@@ -3,9 +3,15 @@ param (
     [string]$OUTPUT_DIR = ".\bin"                   # Default output path for the MSI
 )
 
-# Prepare dependencies
-Write-Host "Copying the roots.exe from win-ca package"
-Copy-Item ".\node_modules\win-ca\lib\roots.exe" -Destination "$OUTPUT_DIR\roots.exe"
+# Prepare dependencies.
+# In the release pipeline roots.exe is already staged (and code signed) in
+# $OUTPUT_DIR, so the copy is skipped to avoid overwriting the signed binary.
+if (Test-Path "$OUTPUT_DIR\roots.exe") {
+    Write-Host "Using the existing roots.exe from $OUTPUT_DIR"
+} else {
+    Write-Host "Copying the roots.exe from win-ca package"
+    Copy-Item ".\node_modules\win-ca\lib\roots.exe" -Destination "$OUTPUT_DIR\roots.exe"
+}
 
 # Install WiX
 Write-Host "Installing the wix.exe"

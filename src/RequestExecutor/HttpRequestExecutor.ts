@@ -22,10 +22,19 @@ import {
   Multi
 } from '@brightsec/node-libcurl';
 import { parse as parseUrl } from 'node:url';
+import { isUtf8 } from 'node:buffer';
+import { isUint8Array } from 'node:util/types';
+
+export type ScriptRequest = Pick<
+  RequestOptions,
+  'url' | 'method' | 'headers'
+> & {
+  body?: string | Uint8Array;
+};
 
 type ScriptEntrypoint = (
-  options: RequestOptions
-) => Promise<RequestOptions> | RequestOptions;
+  options: ScriptRequest
+) => Promise<ScriptRequest> | ScriptRequest;
 
 type ResponseScriptEntrypoint = (options: {
   protocol: string;
@@ -573,39 +582,50 @@ export class HttpRequestExecutor implements RequestExecutor {
       return script;
     }
 
-    // Scripts see a decoded, string view of the body. That view is lossy for
-    // bytes that are not valid UTF-8, so the original body and its encoding are
-    // restored whenever the script leaves the body untouched.
-    const decodedBody = script.encoding
-      ? iconv.encode(script.body, script.encoding).toString()
-      : script.body;
+    const scriptBody = this.decodeScriptBody(script);
 
     const result = await vm.exec<ScriptEntrypoint>(
       this.DEFAULT_SCRIPT_ENTRYPOINT,
       {
-        ...script.toJSON(),
-        body: decodedBody,
-        // The body handed to the script is already decoded, so reporting the
-        // original `encoding` would describe it incorrectly. Every other option
-        // round-trips verbatim.
-        encoding: undefined
+        url: script.url,
+        method: script.method,
+        headers: script.headers,
+        body: scriptBody
       }
     );
-    // The script is handed the body already decoded and no `encoding`, so one it
-    // hands back is either absent or its own addition, and the lossy decoded
-    // view is all that is left of the body — restore both. Only a script that
-    // asks for an encoding the request did not already have is asking for its
-    // own body to be decoded, so pass that through.
-    const bodyUntouched = !!result && result.body === decodedBody;
-    const encodingUnchanged =
-      !result?.encoding || result.encoding === script.encoding;
-    const restoreOriginalBody = bodyUntouched && encodingUnchanged;
 
-    return new Request(
-      restoreOriginalBody
-        ? { ...result, body: script.body, encoding: script.encoding }
-        : result
-    );
+    return new Request({
+      ...script.toJSON(),
+      url: result.url,
+      method: result.method,
+      headers: result.headers,
+      ...this.encodeScriptBody(result.body, scriptBody)
+    });
+  }
+
+  private decodeScriptBody({ body, encoding }: Request): ScriptRequest['body'] {
+    if (!encoding || !body) {
+      return body;
+    }
+
+    const bytes = Buffer.from(body, encoding);
+
+    return isUtf8(bytes) ? bytes.toString() : bytes;
+  }
+
+  private encodeScriptBody(
+    body: ScriptRequest['body'],
+    scriptBody: ScriptRequest['body']
+  ): Pick<RequestOptions, 'body' | 'encoding'> {
+    // Bytes may be edited in place, so only an unchanged string is untouched.
+    if (typeof body === 'string' && body === scriptBody) {
+      return {};
+    }
+
+    // A script runs in its own realm, so its bytes fail `instanceof`.
+    return isUint8Array(body)
+      ? { body: Buffer.from(body).toString('base64'), encoding: 'base64' }
+      : { body, encoding: undefined };
   }
 
   private async handleResponseScript(
